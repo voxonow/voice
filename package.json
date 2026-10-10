@@ -9,7 +9,8 @@
     "protocol",
     "client",
     "server",
-    "demo"
+    "demo",
+    "bench"
   ],
   "scripts": {
     "build": "npm run build --workspace=protocol && npm run build --workspace=client && npm run build --workspace=server && npm run build --workspace=demo",
@@ -17,7 +18,8 @@
     "test": "npm run test --workspaces --if-present",
     "test:e2e": "npm run build && playwright test",
     "keys": "node demo/scripts/generate-keys.mjs",
-    "dev": "node scripts/dev.mjs"
+    "dev": "node scripts/dev.mjs",
+    "bench:latency": "npm run build && npm run latency --workspace=bench"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.0",

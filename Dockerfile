@@ -13,6 +13,7 @@ COPY protocol/package.json protocol/
 COPY client/package.json client/
 COPY server/package.json server/
 COPY demo/package.json demo/
+COPY bench/package.json bench/
 RUN npm ci
 COPY tsconfig.base.json ./
 COPY protocol protocol

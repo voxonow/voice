@@ -1,0 +1,15 @@
+{
+  "name": "@voxonow/voice-bench",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "latency": "node latency.mjs"
+  },
+  "devDependencies": {
+    "@voxonow/voice-client": "^0.0.0",
+    "esbuild": "^0.28.2",
+    "jose": "^6.2.12",
+    "livekit-client": "^2.21.0"
+  }
+}

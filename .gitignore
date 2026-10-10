@@ -11,3 +11,4 @@ playwright-report/
 *.pem
 *.key
 .DS_Store
+bench/dist/
