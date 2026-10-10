@@ -44,6 +44,12 @@ export type VoiceClientEvents = {
   trackMuted: [RemoteTrack];
   trackUnmuted: [RemoteTrack];
   disconnected: [{ code: number; reason: string }];
+  /**
+   * Media path state of the send or receive transport. `failed` means media
+   * cannot flow (e.g. ICE found no working route) even though signaling is up.
+   * Automatic recovery is M2; until then the app should tell the user.
+   */
+  mediaStateChanged: [{ direction: 'send' | 'recv'; state: RTCPeerConnectionState }];
 };
 
 export class VoiceError extends Error {
@@ -209,6 +215,7 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
     };
     const transport = direction === 'send' ? device.createSendTransport(options) : device.createRecvTransport(options);
 
+    transport.on('connectionstatechange', (state) => this.emit('mediaStateChanged', { direction, state }));
     transport.on('connect', ({ dtlsParameters }, callback, errback) => {
       this.request('connectTransport', {
         transportId: transport.id,

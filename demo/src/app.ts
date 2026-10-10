@@ -73,6 +73,10 @@ async function join(room: string, name: string, options: { publish?: Source[]; m
     log(`${p.name} ayrıldı`);
     renderParticipants();
   });
+  next.on('mediaStateChanged', ({ direction, state }) => {
+    const label = direction === 'send' ? 'gönderme' : 'alma';
+    log(state === 'failed' ? `HATA: ${label} yolu kurulamadı (medya akmıyor)` : `${label} bağlantısı: ${state}`);
+  });
   next.on('trackSubscribed', attach);
   next.on('trackUnsubscribed', detach);
   next.on('disconnected', ({ code, reason }) => {

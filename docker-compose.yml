@@ -10,8 +10,10 @@ services:
       target: server
     environment:
       PORT: '7800'
-      # Browsers on this machine reach the media ports through localhost.
-      RTC_ANNOUNCED_ADDRESS: 127.0.0.1
+      # Address browsers reach the media ports on. 127.0.0.1 works for Chrome
+      # and Safari; Firefox never connects to a loopback address, so for
+      # Firefox run: RTC_ANNOUNCED_ADDRESS=<this machine's LAN IP> docker compose up
+      RTC_ANNOUNCED_ADDRESS: ${RTC_ANNOUNCED_ADDRESS:-127.0.0.1}
       RTC_PORT_BASE: '40000'
       NUM_WORKERS: '2'
       TICKET_PUBLIC_KEY_FILE: /keys/ticket-public.pem

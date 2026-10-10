@@ -5,6 +5,7 @@
 //   npm run dev -- --no-build  run what is already built (used by e2e tests)
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,6 +20,20 @@ if (!process.argv.includes('--no-build')) {
   if (built.status !== 0) process.exit(built.status ?? 1);
 }
 
+/**
+ * The address media is announced on. Not 127.0.0.1: Firefox gathers ICE
+ * candidates only on real interfaces and never pairs them with a loopback
+ * address, so a loopback announcement silently fails there.
+ */
+function lanAddress() {
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (address.family === 'IPv4' && !address.internal) return address.address;
+    }
+  }
+  return '127.0.0.1';
+}
+
 const voicePort = process.env.PORT || '7800';
 const demoPort = process.env.DEMO_PORT || '5173';
 
@@ -28,7 +43,7 @@ const children = [
     env: {
       ...process.env,
       PORT: voicePort,
-      RTC_ANNOUNCED_ADDRESS: process.env.RTC_ANNOUNCED_ADDRESS || '127.0.0.1',
+      RTC_ANNOUNCED_ADDRESS: process.env.RTC_ANNOUNCED_ADDRESS || lanAddress(),
       NUM_WORKERS: process.env.NUM_WORKERS || '2',
       TICKET_PUBLIC_KEY_FILE: join(keys, 'ticket-public.pem'),
       ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS || `http://localhost:${demoPort},http://127.0.0.1:${demoPort}`,
