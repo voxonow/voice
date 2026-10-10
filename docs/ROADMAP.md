@@ -15,7 +15,7 @@ sayılmaz.
 |---|---|---|
 | M0 | Hazırlık ve teknik prototip | ✅ 2026-10-10 — otomatik kriterler; elle kalite onayı açık |
 | M1 | Ses çekirdeği | 🟡 Başladı |
-| M6 | Gürültü bastırma (M1 ile paralel) | ⚪ |
+| M6 | Gürültü bastırma (M1 ile paralel) | 🟡 Başladı |
 | M2 | Bağlantı dayanıklılığı ve TURN | ⚪ |
 | M3 | Konuşma özellikleri | ⚪ |
 | M4 | Kamera ve ekran paylaşımı | ⚪ |
@@ -417,6 +417,12 @@ tamponu ham sayaçları) ve mikrofonsuz katılımcıda RTT; `RoomManager.get`.
 - **B5 — Ağ bozulması yalnız tek yönde test edilebildi;** iki yönlü test
   Linux'ta (M2/M7).
 
+**Elle test hazırlığı (2026-10-10):** `npm run dev:lan` yerel ağda HTTPS demo
+(telefonlar dahil; yalnız aynı alt ağ, sinyalleşme yalnız loopback, yalnız
+LAN'a sınırlı geliştirme CA'sı) ve `scripts/packet-loss.sh` (yalnız ses
+UDP portlarına kayıp/gecikme, kuru çalıştırma, otomatik geri alma). Adımlar:
+`docs/LAN-TEST.md`. Testler henüz yapılmadı.
+
 **Elle yapılması gerekenler (M1'i kapatmak için)**
 - Gerçek Safari + Chrome + Firefox, gerçek mikrofon/kulaklık, 3 kişi, 30 dk.
 - Kayıplı ağda (ör. macOS Network Link Conditioner, %5 kayıp) sesin
@@ -456,7 +462,75 @@ RNNoise, Krisp'in eşdeğeri kabul edilmez.
       mikrofon, kulaklıksız).
 - [ ] Seçim ve gerekçesi bu belgeye yazılır.
 
-**Sonuçlar** — _doldurulacak_
+**Sonuçlar** — 2026-10-10, ilk nesnel ölçüm: **ön bulgu, seçim yapılmadı**
+(kriterler karşılanmadı)
+
+Araç: `npm run bench:m6` (`bench/m6/`). Kayıpsız, çevrim dışı; ağ ve RED
+etkisi bu ölçüme **girmez** (o ayrı: M1 B1). Konuşma: macOS TTS (Türkçe,
+"Yelda"), 21,4 sn; girişim **sentetik** (fan, klavye, sokak, iki yabancı
+konuşmacı, yankılı oda), 5 dB SNR. Gerçek kayıtlar yok. Makine: bu Mac
+(Apple Silicon), headless Chromium. Çevrim dışı adayların sonuçları dört
+koşuda birebir aynı çıktı.
+
+Ölçütler: *gürültü azaltma* = konuşma aralarında girişe göre enerji düşüşü;
+*konuşma değişimi* = konuşma karelerinde çıktı enerjisi ÷ yalnız konuşmanın
+enerjisi (kusursuz bastırıcı 0 dB; eksi = konuşma kaybı); *SI-SDR
+iyileşmesi* = temiz konuşmaya benzerlikteki artış (bozulmayı da cezalandırır);
+*gecikme* = temiz konuşmayla bir kez ölçülür, canlı çağrıyla aynı AudioWorklet
+yolu (128 örneklik bloklar); *CPU* = işlem süresi ÷ ses süresi.
+
+| Aday | Boyut (istemci indirir) | Gürültü azaltma | Konuşma değişimi | SI-SDR iyileşmesi | Eklenen gecikme | CPU (tek çekirdek) |
+|---|---|---|---|---|---|---|
+| RNNoise | 157 KB | 12,0 dB | +0,1 dB | +3,9 dB | 21 ms | %0,7 |
+| Speex | 56 KB | 3,0 dB | +0,4 dB | +0,8 dB | 3 ms | %0,3 |
+| GTCRN | 197 KB | 21,0 dB | −1,6 dB | +7,6 dB | 32 ms | %2,0 |
+| DeepFilterNet3 | 34 MB | 30,7 dB | −3,2 dB | +3,7 dB | 30 ms | %2,4 |
+
+Koşula göre (SI-SDR iyileşmesi / gürültü azaltma, dB):
+
+| Koşul | RNNoise | Speex | GTCRN | DeepFilterNet3 |
+|---|---|---|---|---|
+| fan | 7,8 / 32,0 | 3,0 / 6,6 | 10,0 / 25,6 | 12,9 / 35,8 |
+| klavye | 7,0 / 6,0 | 0,0 / 0,3 | 22,4 / 48,5 | 2,7 / 54,0 |
+| sokak | 4,3 / 19,9 | 1,0 / 4,1 | 8,5 / 24,1 | 10,4 / 47,5 |
+| konuşma üstüne konuşma | 0,2 / 0,1 | 0,4 / 1,6 | −3,1 / 3,0 | −7,5 / 4,9 |
+| yankılı oda | 0,5 / 2,1 | −0,2 / 2,4 | 0,1 / 3,9 | −0,1 / 11,4 |
+
+**Chrome yerleşik bastırması — ölçülemedi (güvenilir değil).** Dosya, Chrome'un
+sahte mikrofonuna verilerek gerçek yakalama yolundan ölçüldü; aynı dosyalarla
+dört koşuda gürültü azaltma ortalaması 6,1–11,9 dB arasında değişti (koşul
+bazında ör. fan 7,5–21,1 dB). Sebep belirlenmedi (hizalama ya da Chrome'un
+gürültü tahmininin her oturumda farklı başlaması olabilir). SI-SDR, gecikme ve
+CPU da bu yoldan ölçülemiyor (yol birkaç örnek titreşiyor; her yakalama dosyayı
+kendi başından çalıyor; CPU ses servisinden ayrılamıyor). Chrome, Safari ve
+Firefox yerleşik bastırması elle/gerçek mikrofonla değerlendirilecek.
+
+**Ön bulgular (kazanan seçilmedi; gerçek kayıtlar, Krisp karşılaştırması ve
+gerçek cihaz testleri olmadan seçim yapılmaz)**
+- RNNoise ve GTCRN ön bulgu olarak öne çıkıyor; ikisi de küçük (≤ 200 KB) ve
+  kendi sunucumuzdan barındırılabilir. RNNoise konuşmayı korur ama gürültüyü
+  az siler; GTCRN daha çok siler, konuşmayı biraz kısar; gecikmesi (32 ms)
+  hedefin (≤ 20 ms) üstünde, RNNoise'unki (21 ms) sınırda.
+- DeepFilterNet3 en çok gürültüyü siliyor, konuşmayı en çok kısıyor; 34 MB WASM
+  ve tek kişilik, 0.1.0 sürümlü bir web yapısı (`@lofcz/deepfilternet-web`)
+  ciddi riskler.
+- Speex bu koşullarda etkisiz düzeyde zayıf.
+- Hiçbir aday yankıyı ya da arka plandaki başka konuşmaları çözmüyor; GTCRN ve
+  DeepFilterNet3 orada konuşmayı bozuyor (negatif SI-SDR). Krisp'in bu iki
+  durumdaki davranışı karşılaştırmada belirleyici olabilir.
+- Gecikmenin bir kısmı model çerçevesi ile 128 örneklik blok uyuşmazlığından
+  gelen tamponlama; azaltılabilir bir kalem.
+- Elenen: `deepfilternet3-noise-filter` modeli çalışma anında üçüncü taraf bir
+  CDN'den (`cdn.mezon.ai`) indiriyor ve LiveKit'e bağlı.
+- Lisanslar: GTCRN ve wasm yapısı MIT, RNNoise BSD-3-Clause, DeepFilterNet
+  MIT/Apache-2.0 (paket beyanı).
+
+**Henüz yapılmayanlar (kriterler açık):** gerçek kayıtlarla ölçüm; Krisp ile
+karşılaştırma (Krisp yalnız LiveKit Cloud'da çalışır → bugünkü Voxonow
+üzerinden aynı örneklerle dinleme); kulakla doğallık değerlendirmesi
+(dosyalar `test-results/m6/listen/<koşul>/`); tarayıcıların yerleşik
+bastırması (elle); düşük donanımlı telefonda CPU; hoparlör + mikrofonla yankı
+davranışı.
 
 ### M2 — Bağlantı dayanıklılığı ve TURN
 
@@ -683,6 +757,9 @@ geçer, prod'a ayrıca karar verilmeden çıkmaz.
 
 ## 8. Değişiklik günlüğü
 
+- **2026-10-10** — M1 elle testleri için yerel ağ HTTPS demo ve paket kaybı
+  script'i hazırlandı (`docs/LAN-TEST.md`); M6 ilk nesnel ölçümü (Chrome
+  yerleşik, RNNoise, Speex, GTCRN, DeepFilterNet3). M1 ve M6 açık.
 - **2026-10-10** — Kararlar: M1 ara checkpoint olarak commit (M1 açık);
   RED eksikliği bilinen kalite riski olarak kabul, çatallama yok, K4
   değişmedi (yeniden açma koşulu M1 B1'de); Safari tamponlama farkı açık

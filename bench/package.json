@@ -7,6 +7,8 @@
     "latency": "node latency.mjs"
   },
   "devDependencies": {
+    "@lofcz/deepfilternet-web": "^0.1.0",
+    "@sapphi-red/web-noise-suppressor": "^0.4.1",
     "@voxonow/voice-client": "^0.0.0",
     "esbuild": "^0.28.2",
     "jose": "^6.2.12",

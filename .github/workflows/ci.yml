@@ -58,3 +58,16 @@ jobs:
             -e TICKET_PUBLIC_KEY="$(cat keys/pub.pem)" voxonow-voice:ci
           for i in $(seq 1 30); do curl -fsS localhost:7800/healthz && exit 0; sleep 1; done
           docker logs voice; exit 1
+      - name: Demo image runs and reports healthy
+        run: |
+          node -e "const {generateKeyPairSync}=require('crypto');const {privateKey}=generateKeyPairSync('ed25519');require('fs').writeFileSync('keys/priv.pem',privateKey.export({type:'pkcs8',format:'pem'}))"
+          chmod 644 keys/priv.pem
+          docker run -d --name demo -p 5173:5173 -e DEMO_HOST=0.0.0.0 \
+            -e TICKET_PRIVATE_KEY_FILE=/keys/priv.pem -v "$PWD/keys:/keys:ro" voxonow-voice-demo:ci
+          ready=""
+          for i in $(seq 1 30); do curl -fsS localhost:5173/healthz && { ready=1; break; }; sleep 1; done
+          [ -n "$ready" ] || { docker logs demo; exit 1; }
+          # Ready means it serves what a browser needs, not just that it listens.
+          curl -fsS localhost:5173/ | grep -q 'voiceDemo\|app.js'
+          curl -fsS -o /dev/null localhost:5173/app.js
+          curl -fsS -X POST -H 'content-type: application/json' -d '{"room":"ci","name":"ci"}' localhost:5173/api/ticket | grep -q '"ticket":"ey'

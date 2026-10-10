@@ -4,9 +4,18 @@
 // Development only. It hands a ticket to anyone who asks, which is exactly
 // what Voxonow's real API must never do — there, the ticket comes after the
 // user's session and channel permissions have been checked.
+//
+// LAN mode (DEMO_TLS_CERT_FILE + DEMO_TLS_KEY_FILE, set by `npm run dev:lan`):
+// serves HTTPS, refuses clients outside this Mac's subnets, proxies /ws to the
+// voice server (VOICE_UPSTREAM, listening on loopback only) so a device trusts
+// one certificate for one origin, and offers the development CA at /ca.cer.
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { createServer as createTlsServer } from 'node:https';
+import { connect } from 'node:net';
+import { networkInterfaces } from 'node:os';
+import { isLanClient } from './lan.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SignJWT, importPKCS8 } from 'jose';
@@ -19,14 +28,44 @@ if (process.env.NODE_ENV === 'production') {
 const here = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.DEMO_PORT || 5173);
 const voiceUrl = process.env.VOICE_URL || 'ws://localhost:7800/ws';
+const tls = process.env.DEMO_TLS_CERT_FILE && process.env.DEMO_TLS_KEY_FILE;
+const voiceUpstream = new URL(process.env.VOICE_UPSTREAM || 'ws://127.0.0.1:7800/ws');
+const caFile = process.env.DEMO_CA_FILE;
+
+/** Host header values that name this Mac: its LAN IPs, <name>.local, localhost — on our port. */
+function isOwnHost(host) {
+  if (typeof host !== 'string') return false;
+  const match = /^([A-Za-z0-9.-]+):(\d+)$/.exec(host);
+  if (!match || Number(match[2]) !== port) return false;
+  const name = match[1].toLowerCase();
+  const local = (process.env.DEMO_LOCAL_NAME || '').toLowerCase();
+  return (
+    name === 'localhost' ||
+    name === '127.0.0.1' ||
+    (local !== '' && name === `${local}.local`) ||
+    lanInterfaces().some((a) => a.address === name)
+  );
+}
+
+function lanInterfaces() {
+  return Object.values(networkInterfaces())
+    .flat()
+    .filter((a) => a && a.family === 'IPv4' && !a.internal);
+}
 const privateKeyPath = process.env.TICKET_PRIVATE_KEY_FILE || join(here, '..', '.dev-keys', 'ticket-private.pem');
 const privateKey = await importPKCS8(readFileSync(privateKeyPath, 'utf8'), 'EdDSA');
 
 // Browser-side events from the demo page, so a developer (or an assistant
 // reading the repo) can diagnose a manual test without copying from each window.
 const clientLogDir = process.env.DEV_LOG_DIR || join(here, '..', '.dev-logs');
-mkdirSync(clientLogDir, { recursive: true });
-const clientLog = join(clientLogDir, 'clients.log');
+let clientLog;
+try {
+  mkdirSync(clientLogDir, { recursive: true });
+  clientLog = join(clientLogDir, 'clients.log');
+} catch (error) {
+  // e.g. a read-only container: the demo still works, only without the log.
+  console.warn(`browser log disabled: cannot create ${clientLogDir} (${error.code})`);
+}
 
 const SOURCES = ['microphone', 'camera', 'screen_share', 'screen_share_audio'];
 const files = {
@@ -55,7 +94,11 @@ async function readJson(request) {
   return JSON.parse(body || '{}');
 }
 
-const server = createServer(async (request, response) => {
+const handler = async (request, response) => {
+  if (tls && !isLanClient(request.socket.remoteAddress, lanInterfaces())) {
+    response.writeHead(403).end();
+    return;
+  }
   try {
     const url = new URL(request.url ?? '/', 'http://localhost');
     if (request.method === 'POST' && url.pathname === '/api/ticket') {
@@ -64,9 +107,16 @@ const server = createServer(async (request, response) => {
         response.writeHead(400).end();
         return;
       }
+      // In LAN mode signaling goes through this same origin (proxied below).
+      // Only a Host naming this Mac is echoed back into the URL.
+      if (tls && !isOwnHost(request.headers.host)) {
+        response.writeHead(400).end();
+        return;
+      }
       const ticket = await mintTicket({ room, name, publish: Array.isArray(publish) ? publish : SOURCES });
+      const url = tls ? `wss://${request.headers.host}/ws` : voiceUrl;
       response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ ticket, voiceUrl }));
+      response.end(JSON.stringify({ ticket, voiceUrl: url }));
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/log') {
@@ -78,9 +128,18 @@ const server = createServer(async (request, response) => {
           .slice(0, 50)
           .map((line) => `${stamp} [${client.slice(0, 40)}] ${line.slice(0, 500)}\n`)
           .join('');
-        appendFileSync(clientLog, text);
+        if (clientLog) appendFileSync(clientLog, text);
       }
       response.writeHead(204).end();
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/ca.cer' && caFile) {
+      // Public half of the development CA, for installing on test devices.
+      response.writeHead(200, {
+        'content-type': 'application/x-x509-ca-cert',
+        'content-disposition': 'attachment; filename="voxonow-voice-dev-ca.cer"',
+      });
+      response.end(readFileSync(caFile));
       return;
     }
     if (request.method === 'GET' && url.pathname === '/healthz') {
@@ -96,8 +155,51 @@ const server = createServer(async (request, response) => {
     response.writeHead(404).end();
   } catch (error) {
     console.error(error);
-    response.writeHead(500).end();
+    // Never let one bad request take the process down.
+    if (response.headersSent) response.destroy();
+    else response.writeHead(500).end();
   }
-});
+};
 
-server.listen(port, () => console.log(`demo on http://localhost:${port} (voice: ${voiceUrl})`));
+const server = tls
+  ? createTlsServer({ cert: readFileSync(process.env.DEMO_TLS_CERT_FILE), key: readFileSync(process.env.DEMO_TLS_KEY_FILE) }, handler)
+  : createServer(handler);
+
+if (tls) {
+  // WebSocket signaling: pipe the upgrade straight through to the voice
+  // server. The browser's Origin header is forwarded untouched, so the voice
+  // server's own origin allow-list still decides.
+  server.on('upgrade', (request, socket, head) => {
+    const path = new URL(request.url ?? '/', 'https://localhost').pathname;
+    if (path !== '/ws' || !isLanClient(socket.remoteAddress, lanInterfaces())) {
+      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      return;
+    }
+    const upstream = connect(Number(voiceUpstream.port), voiceUpstream.hostname, () => {
+      const headers = Object.entries(request.headers)
+        .filter(([name]) => name !== 'host')
+        .map(([name, value]) => `${name}: ${Array.isArray(value) ? value.join(', ') : value}`);
+      upstream.write(
+        [`GET ${voiceUpstream.pathname} HTTP/1.1`, `host: ${voiceUpstream.host}`, ...headers, '', ''].join('\r\n'),
+      );
+      if (head.length) upstream.write(head);
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+    });
+    const close = () => {
+      upstream.destroy();
+      socket.destroy();
+    };
+    upstream.on('error', close);
+    socket.on('error', close);
+  });
+}
+
+const host = process.env.DEMO_HOST || (tls ? '0.0.0.0' : 'localhost');
+server.listen(port, host, () =>
+  console.log(
+    tls
+      ? `demo on https://<this Mac>:${port} (LAN only; signaling proxied to ${voiceUpstream.href})`
+      : `demo on http://${host}:${port} (voice: ${voiceUrl})`,
+  ),
+);

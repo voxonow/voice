@@ -3,11 +3,14 @@
 //
 //   npm run dev              build + run
 //   npm run dev -- --no-build  run what is already built (used by e2e tests)
+//   npm run dev:lan          HTTPS on the local network, for phones and other
+//                            computers (see docs/LAN-TEST.md)
 import { spawn, spawnSync } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensureLanCerts } from './lan-cert.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const keys = join(root, '.dev-keys');
@@ -34,13 +37,20 @@ function lanAddress() {
   return '127.0.0.1';
 }
 
+const lan = process.argv.includes('--lan');
 const voicePort = process.env.PORT || '7800';
 // Everything the voice server prints also goes to .dev-logs/voice.log, and the
 // demo page sends its browser-side events to .dev-logs/clients.log.
 const logDir = process.env.DEV_LOG_DIR || join(root, '.dev-logs');
 mkdirSync(logDir, { recursive: true });
 const voiceLog = createWriteStream(join(logDir, 'voice.log'), { flags: 'a' });
-const demoPort = process.env.DEMO_PORT || '5173';
+const demoPort = process.env.DEMO_PORT || (lan ? '5443' : '5173');
+const lanInfo = lan ? ensureLanCerts() : undefined;
+const lanOrigins = lanInfo
+  ? [...lanInfo.interfaces.map((i) => i.address), `${lanInfo.name}.local`, 'localhost', '127.0.0.1'].map(
+      (host) => `https://${host}:${demoPort}`,
+    )
+  : [];
 
 const children = [
   spawn(process.execPath, [join(root, 'server/dist/index.js')], {
@@ -48,17 +58,43 @@ const children = [
     env: {
       ...process.env,
       PORT: voicePort,
+      // LAN mode: signaling only on loopback (reached through the HTTPS demo's
+      // proxy); media on the LAN address the phones can reach.
+      ...(lan ? { HOST: '127.0.0.1', RTC_LISTEN_IP: lanAddress() } : {}),
       RTC_ANNOUNCED_ADDRESS: process.env.RTC_ANNOUNCED_ADDRESS || lanAddress(),
       NUM_WORKERS: process.env.NUM_WORKERS || '2',
       TICKET_PUBLIC_KEY_FILE: join(keys, 'ticket-public.pem'),
-      ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS || `http://localhost:${demoPort},http://127.0.0.1:${demoPort}`,
+      ALLOWED_ORIGINS:
+        process.env.ALLOWED_ORIGINS ||
+        (lan ? lanOrigins.join(',') : `http://localhost:${demoPort},http://127.0.0.1:${demoPort}`),
     },
   }),
   spawn(process.execPath, [join(root, 'demo/dev-server.mjs')], {
     stdio: 'inherit',
-    env: { ...process.env, DEMO_PORT: demoPort, VOICE_URL: `ws://localhost:${voicePort}/ws`, DEV_LOG_DIR: logDir },
+    env: {
+      ...process.env,
+      DEMO_PORT: demoPort,
+      VOICE_URL: `ws://localhost:${voicePort}/ws`,
+      DEV_LOG_DIR: logDir,
+      ...(lanInfo
+        ? {
+            DEMO_TLS_CERT_FILE: join(lanInfo.dir, 'server.crt'),
+            DEMO_TLS_KEY_FILE: join(lanInfo.dir, 'server.key'),
+            DEMO_CA_FILE: join(lanInfo.dir, 'ca.cer'),
+            VOICE_UPSTREAM: `ws://127.0.0.1:${voicePort}/ws`,
+            DEMO_LOCAL_NAME: lanInfo.name,
+          }
+        : {}),
+    },
   }),
 ];
+if (lanInfo) {
+  console.log(`\nLAN demo (local network only):`);
+  for (const i of lanInfo.interfaces) console.log(`  https://${i.address}:${demoPort}`);
+  console.log(`  https://${lanInfo.name}.local:${demoPort}`);
+  console.log(`  CA to install on devices: https://${lanInfo.interfaces[0].address}:${demoPort}/ca.cer`);
+  console.log(`  CA SHA-256: ${lanInfo.caFingerprint}\n`);
+}
 for (const stream of [children[0].stdout, children[0].stderr]) {
   stream.on('data', (chunk) => {
     process.stdout.write(chunk);

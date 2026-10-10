@@ -33,6 +33,9 @@ services:
       target: demo
     environment:
       DEMO_PORT: '5173'
+      # Inside the container: listen on all interfaces so the port mapping works.
+      DEMO_HOST: 0.0.0.0
+      DEV_LOG_DIR: /tmp/dev-logs
       VOICE_URL: ws://localhost:7800/ws
       TICKET_PRIVATE_KEY_FILE: /keys/ticket-private.pem
     volumes:

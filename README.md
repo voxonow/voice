@@ -23,6 +23,9 @@ npm run dev          # anahtarları üretir, derler, sunucu + demo'yu başlatır
 
 http://localhost:5173 adresini iki ayrı tarayıcı penceresinde açıp aynı odaya katıl.
 
+Telefon ve başka bilgisayarlarla yerel ağda (HTTPS, yalnız aynı alt ağ):
+`npm run dev:lan` — kurulum ve güvenlik notları: [docs/LAN-TEST.md](docs/LAN-TEST.md).
+
 Docker ile:
 
 ```sh
@@ -57,6 +60,9 @@ npm run bench:quality -- --browsers 'chromium*8' --duration 45   # worker CPU ö
   ile LAN adresini duyuran bir LiveKit), `--external ws://…/ws` çalışan bir
   sunucuyu (ör. `tc netem` altındaki Docker konteyneri) ölçer.
 - Sonuçlar `test-results/bench/` altına JSON olarak yazılır.
+- `bench:m6`: gürültü bastırma adaylarının çevrim dışı nesnel karşılaştırması
+  (macOS TTS ile Türkçe konuşma + sentetik gürültü); dinleme dosyaları
+  `test-results/m6/listen/` altına. Ön bulgu üretir, seçim yapmaz.
 
 ## Sunucu yapılandırması
 

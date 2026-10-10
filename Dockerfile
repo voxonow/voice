@@ -45,7 +45,7 @@ WORKDIR /app
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules node_modules
 COPY --from=build /app/demo/package.json demo/
-COPY --from=build /app/demo/dev-server.mjs demo/
+COPY --from=build /app/demo/dev-server.mjs /app/demo/lan.mjs demo/
 COPY --from=build /app/demo/public demo/public
 COPY --from=build /app/demo/dist demo/dist
 USER node
