@@ -120,16 +120,34 @@ function normalize(x, peak = 0.8) {
   return Float32Array.from(x, (v) => (v / m) * peak);
 }
 
+/** Scales `x` so its RMS over speech frames is `targetDb` dBFS. */
+function levelSpeech(x, targetDb = -26) {
+  const mask = speechMask(x);
+  const e = maskedEnergy(x, mask, true) / Math.max(1, mask.filter(Boolean).length * 960);
+  const k = 10 ** (targetDb / 20) / Math.sqrt(e);
+  return Float32Array.from(x, (v) => v * k);
+}
+
 /**
  * Builds the corpus in `dir`: clean.wav (reference) and one noisy file per
- * condition. Returns { clean, conditions: { name: { file, reference } } }.
+ * condition. Returns { clean, conditions: { name: { file, speech } } }.
+ *
+ * speechFile: use this recording as the speech (any format afconvert reads)
+ * instead of the TTS sentence; it is levelled to −26 dBFS over speech frames
+ * so runs with different recordings stay comparable.
  */
-export function buildCorpus(dir, { snrDb = 5 } = {}) {
+export function buildCorpus(dir, { snrDb = 5, speechFile } = {}) {
   mkdirSync(dir, { recursive: true });
-  const raw = tts('Yelda', SPEECH, join(dir, '_speech.wav'));
+  let raw;
+  if (speechFile) {
+    execFileSync('afconvert', ['-f', 'WAVE', '-d', 'LEI16@48000', '-c', '1', speechFile, join(dir, '_speech.wav')]);
+    raw = levelSpeech(readWav(join(dir, '_speech.wav')));
+  } else {
+    raw = tts('Yelda', SPEECH, join(dir, '_speech.wav'));
+  }
   const lead = new Float32Array(LEAD_IN_S * RATE);
   const tail = new Float32Array(TAIL_S * RATE);
-  const clean = normalize(Float32Array.from([...lead, ...raw, ...tail]), 0.5);
+  const clean = speechFile ? Float32Array.from([...lead, ...raw, ...tail]) : normalize(Float32Array.from([...lead, ...raw, ...tail]), 0.5);
   const n = clean.length;
   writeWav(join(dir, 'clean.wav'), clean);
 

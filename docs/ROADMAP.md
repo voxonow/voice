@@ -539,7 +539,9 @@ Firefox yerleşik bastırması elle/gerçek mikrofonla değerlendirilecek.
 **Ön bulgular (kazanan seçilmedi; gerçek kayıtlar, Krisp karşılaştırması ve
 gerçek cihaz testleri olmadan seçim yapılmaz)**
 - RNNoise ve GTCRN ön bulgu olarak öne çıkıyor; ikisi de küçük (≤ 200 KB) ve
-  kendi sunucumuzdan barındırılabilir. RNNoise konuşmayı korur ama gürültüyü
+  kendi sunucumuzdan barındırılabilir. _Düzeltme (aynı gün, gerçek kayıtla):
+  GTCRN'in modeli 16 kHz'te çalışır, 8 kHz üstünü siler; TTS örneği 10 kHz'te
+  bittiği için bu ölçüm bunu göstermedi. Aşağıdaki "Canlı deneme"ye bakın._ RNNoise konuşmayı korur ama gürültüyü
   az siler; GTCRN daha çok siler, konuşmayı biraz kısar; gecikmesi (32 ms)
   hedefin (≤ 20 ms) üstünde, RNNoise'unki (21 ms) sınırda.
 - DeepFilterNet3 en çok gürültüyü siliyor, konuşmayı en çok kısıyor; 34 MB WASM
@@ -562,6 +564,62 @@ karşılaştırma (Krisp yalnız LiveKit Cloud'da çalışır → bugünkü Voxo
 (dosyalar `test-results/m6/listen/<koşul>/`); tarayıcıların yerleşik
 bastırması (elle); düşük donanımlı telefonda CPU; hoparlör + mikrofonla yankı
 davranışı.
+
+**Canlı deneme — 2026-10-10 (ön bulgu, seçim yapılmadı; kriterler açık)**
+
+Demoda yalnız parametreyle açılan üç yöntem: `?ns=rnnoise`, `?ns=gtcrn`
+(modelin kendi 16 kHz bağlamında), `?ns=gtcrn-split` (GTCRN 8 kHz altı +
+orijinalin 8–20 kHz bandı, GTCRN'in alt banttaki kazancıyla zayıflatılarak —
+eşik/VAD yok; bizim birleştirmemiz). İşlem tarayıcının yakalama işlemlerinden
+sonra, yayından önce. Parametre yoksa davranış aynen (E2E ile doğrulandı);
+48 kbps varsayılanı ve `client/`, `server/`, `protocol/` değişmedi.
+
+Ölçüm: `npm run bench:ns -- --speech <kayıt>` (`bench/ns-eval.mjs`); demo ile
+aynı kod (`demo/src/noise.ts`). Konuşma: **gerçek kayıt** (iPhone, ~16 kHz'e
+kadar içerik, −26 dBFS'e seviyelenmiş); aynı tohumlu girişim 5 dB SNR'de;
+ayrıca kaydın kendisi ("clean"). Katman 1 çevrim dışı (yalnız yöntem; iki
+koşuda birebir aynı), Katman 2 canlı (yöntem + Opus 48 kbps + motor).
+Anlaşılırlık: STOI (Taal 2011; bizim uygulamamız — sessiz kare atma
+yaklaşık; yalnız ~4,3 kHz'e kadar bantları görür). Tam tablolar:
+`bench-results/ns/2026-10-10T19-18-41-480Z/report.md` (git dışı).
+
+| Katman 1 (çevrim dışı) | RNNoise | GTCRN (16 kHz) | GTCRN-split |
+|---|---|---|---|
+| Temiz kayıtta 8–12 / 12–16 kHz (konuşma korunuyor mu?) | −0,4 / −1,7 dB | **−55,9 / −57,8 dB** | −4,6 / −0,9 dB |
+| STOI fan / sokak / klavye (yöntemsiz: 0,719 / 0,728 / 0,939) | 0,804 / 0,802 / 0,950 | 0,813 / 0,834 / 0,946 | 0,809 / 0,832 / 0,941 |
+| STOI konuşma üstüne konuşma (yöntemsiz 0,641) | **0,604** | **0,549** | **0,556** |
+| Duraklamalarda gürültü azaltma fan / klavye | 37,0 / 4,9 dB | 23,5 / 44,6 dB | 20,9 / 10,3 dB |
+| Konuşma sırasında kalan üst bant gürültüsü, fan (8–12 / 12–16 kHz, konuşmaya göre) | −2,9 / −9,0 dB | (bant yok) | **+11,2 / +18,1 dB** |
+| Algoritmik gecikme | 20,6 ms | 24,0 ms | 31,9 ms |
+| CPU (tek çekirdek, bu Mac) | %0,5–0,7 | %2,0 | %2,0 |
+
+Katman 2 (canlı): konuşma seviyesi korunuyor (temiz kayıtta −0,1/−0,2 dB);
+yöntemin eklediği gecikme RNNoise 37–43 ms, GTCRN 40–53 ms, GTCRN-split
+48–54 ms (algoritmik gecikme + demonun ikinci AudioContext geçişi ~18–19 ms);
+yöntemsiz uçtan uca 55–69 ms, yöntemle 93–118 ms (ağ/WebRTC payı oturuma göre
+27–52 ms oynuyor). Üç yöntem Firefox 157 ve WebKit 27.2'de (Playwright)
+çalışıyor.
+
+Okuma (karar değil):
+- **RNNoise:** konuşmayı ve tam bandı koruyor; fan/sokakta güçlü, klavye
+  tıklamalarında zayıf (üst bantta tıklama kalıyor).
+- **GTCRN:** gürültüyü güçlü siliyor ama sesi 8 kHz'e daraltıyor (temiz
+  konuşmada bile). STOI bunu göremiyor; bant sütunları gösteriyor.
+- **GTCRN-split:** temiz konuşmanın üst bandını büyük ölçüde koruyor (8–12
+  kHz'te −4,6 dB geçiş boşluğu), ama **konuşma sırasında üst banttaki
+  gürültüyü de geçiriyor** — basit kazanç aynalaması yetmiyor.
+- **Hiçbiri** konuşma üstüne konuşmada yardım etmiyor (STOI düşüyor) ve
+  yankıyı gidermiyor.
+
+Ölçüm sırasında bulunan ve düzeltilen hatalar: (1) **canlı yolda −6 dB** —
+MediaStreamSource tek kanallı izi iki kanal verir, işlemciler ikinciyi sessiz
+bırakıyordu; işlem tek kanala sabitlendi (`noise.ts`); (2) ölçüm aracında
+gecikme `setTimeout` kaymasını içeriyordu — gönderilen/yayınlanan/alınan ses
+artık tek kaydedicinin kanallarında; (3) yeniden örnekleyicinin hızı.
+
+Ölçülmeyenler: Krisp (yalnız LiveKit Cloud; aynı düzenekte çalıştırılamadı),
+kulakla dinleme, gerçek Safari, telefonlar ve telefon CPU'su, hoparlör +
+mikrofonla yankı, gerçek (sentetik olmayan) gürültü kayıtları.
 
 ### M2 — Bağlantı dayanıklılığı ve TURN
 
@@ -788,6 +846,10 @@ geçer, prod'a ayrıca karar verilmeden çıkmaz.
 
 ## 8. Değişiklik günlüğü
 
+- **2026-10-10** — M6 canlı deneme: demoda `?ns=rnnoise|gtcrn|gtcrn-split`
+  (varsayılan kapalı), `npm run bench:ns` (STOI, iki katman), gerçek kayıtla
+  ölçüm. GTCRN'in 8 kHz bant kaybı tespit edildi, önceki ön bulgu düzeltildi.
+  Seçim yapılmadı.
 - **2026-10-10** — Opus bit hızı varsayılanı 48 kbps (LiveKit ile aynı);
   ölçüm M1 altında. `npm run bench:codec` eklendi. M6'ya TTS'in ~10 kHz bant
   sınırlaması notu eklendi.

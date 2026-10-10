@@ -1,4 +1,5 @@
 import { VoiceClient, type RemoteTrack, type Source } from '@voxonow/voice-client';
+import { openContext, parseNs, processTrack, type NsKind } from './noise.js';
 
 /** Quality numbers read from WebRTC stats; what M1's acceptance criteria measure. */
 export interface DemoStats {
@@ -14,6 +15,10 @@ export interface DemoStats {
   roundTripTime?: number;
   /** Opus encoder target (bits/s) of the microphone, as the browser reports it. */
   audioTargetBitrate?: number;
+  /** Noise suppressor in the microphone path ('none' unless ?ns=…). */
+  noiseSuppressor: NsKind | 'none';
+  /** State of the suppressor's AudioContext ('running' when audio flows through it). */
+  noiseContextState?: AudioContextState;
   /**
    * Average time received audio waits in the jitter buffer before playout
    * (seconds), worst over subscribed audio tracks. Network RTT plus this is
@@ -44,6 +49,8 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 
 let client: VoiceClient | undefined;
 let micTrack: MediaStreamTrack | undefined;
+/** Present only with ?ns=…: the context running the noise suppressor. */
+let nsContext: AudioContext | undefined;
 
 async function fetchTicket(room: string, name: string, publish?: Source[]) {
   const response = await fetch('/api/ticket', {
@@ -134,6 +141,12 @@ function detach(track: RemoteTrack): void {
 
 async function join(room: string, name: string, options: { publish?: Source[]; microphone?: boolean } = {}) {
   if (client) throw new Error('already joined');
+  // Demo-only M6 trial switch: ?ns=rnnoise | gtcrn | gtcrn-split. Absent =
+  // the microphone track is published untouched, as before. The context is
+  // opened here, before any await, while the click still counts as a gesture.
+  const ns = options.microphone !== false ? parseNs(new URLSearchParams(location.search).get('ns')) : undefined;
+  const ctx = ns ? openContext(ns) : undefined;
+  nsContext = ctx;
   const { ticket, voiceUrl } = await fetchTicket(room, name, options.publish);
   // Demo-only comparison switch, e.g. ?audioBitrate=32000. Absent = the
   // client's default (48 kbps).
@@ -160,6 +173,8 @@ async function join(room: string, name: string, options: { publish?: Source[]; m
     if (client === next) client = undefined;
     micTrack?.stop();
     micTrack = undefined;
+    void nsContext?.close();
+    nsContext = undefined;
     $('media').replaceChildren();
     renderParticipants();
     setJoined(false);
@@ -172,7 +187,12 @@ async function join(room: string, name: string, options: { publish?: Source[]; m
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
     micTrack = stream.getAudioTracks()[0]!;
-    await next.publish(micTrack, 'microphone');
+    let published = micTrack;
+    if (ns && ctx) {
+      published = await processTrack(ctx, micTrack, ns);
+      log(`gürültü bastırma: ${ns} (${ctx.sampleRate / 1000} kHz)`);
+    }
+    await next.publish(published, 'microphone');
     log('mikrofon yayında');
   }
   renderParticipants();
@@ -191,6 +211,8 @@ async function stats(): Promise<DemoStats> {
     audioConcealedRatio: 0,
     audioPacketsSent: 0,
     perTrack: [],
+    noiseSuppressor: (nsContext && parseNs(new URLSearchParams(location.search).get('ns'))) || 'none',
+    noiseContextState: nsContext?.state,
     subscribedTracks: client?.tracks.size ?? 0,
     participants: [...(client?.participants.values() ?? [])].map((p) => p.name),
   };
@@ -261,6 +283,8 @@ $('join').addEventListener('click', () => {
   if (listenOnly) log('mikrofonsuz katılım');
   join(room, name, { microphone: !listenOnly }).catch((error: Error) => {
     log(`hata: ${error.name}: ${error.message}`);
+    void nsContext?.close();
+    nsContext = undefined;
     client = undefined;
     setJoined(false);
   });

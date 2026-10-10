@@ -71,6 +71,13 @@ const SOURCES = ['microphone', 'camera', 'screen_share', 'screen_share_audio'];
 const files = {
   '/': ['public/index.html', 'text/html; charset=utf-8'],
   '/app.js': ['dist/app.js', 'text/javascript; charset=utf-8'],
+  // Noise-suppression worklets and models (src/noise.ts), copied by the build.
+  '/nsw/rnnoise.js': ['dist/nsw/rnnoise.js', 'text/javascript; charset=utf-8'],
+  '/nsw/rnnoise.wasm': ['dist/nsw/rnnoise.wasm', 'application/wasm'],
+  '/nsw/rnnoise_simd.wasm': ['dist/nsw/rnnoise_simd.wasm', 'application/wasm'],
+  '/nsw/gtcrn.js': ['dist/nsw/gtcrn.js', 'text/javascript; charset=utf-8'],
+  '/nsw/gtcrn.wasm': ['dist/nsw/gtcrn.wasm', 'application/wasm'],
+  '/nsw/band-merge.js': ['dist/nsw/band-merge.js', 'text/javascript; charset=utf-8'],
 };
 
 async function mintTicket({ room, name, publish = SOURCES }) {

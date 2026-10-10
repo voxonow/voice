@@ -17,7 +17,9 @@ export default defineConfig({
     launchOptions: {
       // Fake microphone (a tone) and auto-granted permissions: real audio
       // flows end to end without a sound card.
-      args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+      // Autoplay allowed: tests call join() without a click, and the ?ns=…
+      // tests need their AudioContext running (a real click allows it).
+      args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required'],
     },
     permissions: ['microphone'],
   },

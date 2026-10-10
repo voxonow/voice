@@ -67,7 +67,7 @@ export function rng(seed) {
 }
 
 // ---- FFT (iterative radix-2, in place) ---------------------------------------
-function fft(re, im, inverse = false) {
+export function fft(re, im, inverse = false) {
   const n = re.length;
   for (let i = 1, j = 0; i < n; i++) {
     let bit = n >> 1;
@@ -215,6 +215,44 @@ export function powerSpectrum(x, { size = 2048, include = () => true } = {}) {
     frames++;
   }
   return { power: acc.map((v) => v / Math.max(1, frames)), size, frames };
+}
+
+/**
+ * Band-limited resampling (windowed-sinc, Kaiser β=8, 32 zero crossings).
+ * Anti-aliases when downsampling. Slow but exact enough for measurement.
+ */
+export function resample(x, from, to) {
+  if (from === to) return Float32Array.from(x);
+  const ratio = to / from;
+  const cutoff = Math.min(1, ratio) * 0.95; // relative to the input Nyquist
+  const halfWidth = 32 / cutoff; // 32 zero crossings, in input samples
+  const table = kaiserTable();
+  const n = Math.floor(x.length * ratio);
+  const out = new Float32Array(n);
+  for (let j = 0; j < n; j++) {
+    const t = j / ratio;
+    const lo = Math.max(0, Math.ceil(t - halfWidth)), hi = Math.min(x.length - 1, Math.floor(t + halfWidth));
+    let acc = 0;
+    for (let i = lo; i <= hi; i++) {
+      const d = i - t;
+      const w = table[Math.round((Math.abs(d) / halfWidth) * (table.length - 1))];
+      const arg = Math.PI * cutoff * d;
+      acc += x[i] * w * cutoff * (arg === 0 ? 1 : Math.sin(arg) / arg);
+    }
+    out[j] = acc;
+  }
+  return out;
+}
+
+let kaiser;
+/** Kaiser window (β = 8) sampled over |d| ∈ [0, 1], computed once. */
+function kaiserTable() {
+  if (kaiser) return kaiser;
+  const beta = 8, size = 8192;
+  const i0 = (v) => { let sum = 1, term = 1; for (let k = 1; k < 50; k++) { term *= (v / (2 * k)) ** 2; sum += term; } return sum; };
+  const i0b = i0(beta);
+  kaiser = Float64Array.from({ length: size }, (_, i) => i0(beta * Math.sqrt(Math.max(0, 1 - (i / (size - 1)) ** 2))) / i0b);
+  return kaiser;
 }
 
 export const db = (ratio) => 10 * Math.log10(ratio);
