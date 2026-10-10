@@ -15,6 +15,10 @@ export function readWav(path) {
     const body = off + 8;
     if (id === 'fmt ') {
       fmt = { format: b.readUInt16LE(body), channels: b.readUInt16LE(body + 2), rate: b.readUInt32LE(body + 4), bits: b.readUInt16LE(body + 14) };
+      // WAVE_FORMAT_EXTENSIBLE (0xFFFE, e.g. afconvert from AAC): the real
+      // format code is the first two bytes of the SubFormat GUID.
+      if (fmt.format === 0xfffe && size >= 26) fmt.format = b.readUInt16LE(body + 24);
+      if (fmt.format !== 1 && fmt.format !== 3) throw new Error(`${path}: unsupported WAV format ${fmt.format}`);
     } else if (id === 'data') {
       if (!fmt) throw new Error('data before fmt');
       const frames = size / (fmt.bits / 8) / fmt.channels;
@@ -192,6 +196,25 @@ export function maskedEnergy(x, mask, select, frame = 960) {
     if (isSpeech === select) e += energy(x, f * frame, (f + 1) * frame);
   });
   return e;
+}
+
+/**
+ * Average power spectrum (Welch: Hann-windowed frames, 50 % overlap) over the
+ * frames where `include(frameStartSample)` is true. Returns power per bin;
+ * bin k is k * RATE / size Hz.
+ */
+export function powerSpectrum(x, { size = 2048, include = () => true } = {}) {
+  const re = new Float64Array(size), im = new Float64Array(size), acc = new Float64Array(size / 2);
+  const hann = Float64Array.from({ length: size }, (_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / size));
+  let frames = 0;
+  for (let start = 0; start + size <= x.length; start += size / 2) {
+    if (!include(start)) continue;
+    for (let i = 0; i < size; i++) (re[i] = x[start + i] * hann[i]), (im[i] = 0);
+    fft(re, im);
+    for (let k = 0; k < size / 2; k++) acc[k] += re[k] * re[k] + im[k] * im[k];
+    frames++;
+  }
+  return { power: acc.map((v) => v / Math.max(1, frames)), size, frames };
 }
 
 export const db = (ratio) => 10 * Math.log10(ratio);

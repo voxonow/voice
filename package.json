@@ -22,7 +22,8 @@
     "bench:latency": "npm run build && npm run latency --workspace=bench",
     "bench:quality": "node bench/quality.mjs",
     "dev:lan": "node scripts/dev.mjs --lan",
-    "bench:m6": "node bench/m6/run.mjs"
+    "bench:m6": "node bench/m6/run.mjs",
+    "bench:codec": "npm run build --workspace=client && node bench/codec-ab.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.0",

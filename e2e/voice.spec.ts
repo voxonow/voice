@@ -8,6 +8,7 @@ interface DemoStats {
   subscribedTracks: number;
   participants: string[];
   perTrack: { from: string; packetsReceived: number }[];
+  audioTargetBitrate?: number;
 }
 
 async function joinRoom(page: Page, room: string, name: string): Promise<void> {
@@ -119,4 +120,18 @@ test('muting stops audio at the source, and unmuting brings it back', async ({ b
   const unmuted = await flow(2_000);
   expect(unmuted.sent).toBeGreaterThan(30);
   expect(unmuted.received).toBeGreaterThan(30);
+});
+
+test('the encoder targets 48 kbps by default, and the demo switch can change it', async ({ browser }) => {
+  async function target(query: string): Promise<number | undefined> {
+    const page = await (await browser.newContext()).newPage();
+    await page.goto(`/${query}`);
+    await page.evaluate((r) => (window as any).voiceDemo.join(r, 'X'), `e2e-bitrate-${Date.now()}`);
+    await expect.poll(async () => (await stats(page)).audioTargetBitrate, { timeout: 5_000 }).toBeGreaterThan(0);
+    return (await stats(page)).audioTargetBitrate;
+  }
+  // The client's default (decision 2026-10-10, docs/ROADMAP.md M1), and the
+  // demo-only switch still applied.
+  expect(await target('')).toBe(48_000);
+  expect(await target('?audioBitrate=32000')).toBe(32_000);
 });

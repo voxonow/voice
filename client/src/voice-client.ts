@@ -21,7 +21,16 @@ export interface VoiceClientOptions {
   /** STUN/TURN servers handed to the peer connections. */
   iceServers?: RTCIceServer[];
   requestTimeoutMs?: number;
+  /**
+   * Cap (and, in Chrome, target) for the microphone's Opus bitrate, in bits/s.
+   * Default 48 kbps — what LiveKit uses, and measured closer to the original
+   * than Chrome's own 32 kbps on real speech (docs/ROADMAP.md, M1). Set
+   * through the sender's encoding parameters.
+   */
+  audioMaxBitrate?: number;
 }
+
+export const DEFAULT_AUDIO_MAX_BITRATE = 48_000;
 
 export interface RemoteTrack {
   /** Consumer id; unique per subscription. */
@@ -140,6 +149,10 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
       // Opus: in-band FEC and DTX keep speech intelligible on lossy links and
       // cheap when silent.
       codecOptions: track.kind === 'audio' ? { opusFec: true, opusDtx: true } : undefined,
+      encodings:
+        track.kind === 'audio'
+          ? [{ maxBitrate: this.options.audioMaxBitrate ?? DEFAULT_AUDIO_MAX_BITRATE }]
+          : undefined,
       stopTracks: false,
       // Muted means nothing leaves the device — not silence frames the server
       // then has to drop.

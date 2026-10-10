@@ -12,6 +12,8 @@ export interface DemoStats {
   audioPacketsSent: number;
   /** Seconds, from the selected candidate pair of the send transport. */
   roundTripTime?: number;
+  /** Opus encoder target (bits/s) of the microphone, as the browser reports it. */
+  audioTargetBitrate?: number;
   /**
    * Average time received audio waits in the jitter buffer before playout
    * (seconds), worst over subscribed audio tracks. Network RTT plus this is
@@ -133,7 +135,11 @@ function detach(track: RemoteTrack): void {
 async function join(room: string, name: string, options: { publish?: Source[]; microphone?: boolean } = {}) {
   if (client) throw new Error('already joined');
   const { ticket, voiceUrl } = await fetchTicket(room, name, options.publish);
-  const next = new VoiceClient({ url: voiceUrl });
+  // Demo-only comparison switch, e.g. ?audioBitrate=32000. Absent = the
+  // client's default (48 kbps).
+  const audioBitrate = Number(new URLSearchParams(location.search).get('audioBitrate')) || undefined;
+  if (audioBitrate) log(`deneysel ses bit hızı: ${audioBitrate / 1000} kbps`);
+  const next = new VoiceClient({ url: voiceUrl, audioMaxBitrate: audioBitrate });
   client = next;
   next.on('participantJoined', (p) => {
     log(`${p.name} katıldı`);
@@ -223,7 +229,10 @@ async function stats(): Promise<DemoStats> {
   });
   result.audioConcealedRatio = samples > 0 ? concealed / samples : 0;
   send?.forEach((report) => {
-    if (report.type === 'outbound-rtp' && report.kind === 'audio') result.audioPacketsSent += report.packetsSent ?? 0;
+    if (report.type === 'outbound-rtp' && report.kind === 'audio') {
+      result.audioPacketsSent += report.packetsSent ?? 0;
+      if (report.targetBitrate) result.audioTargetBitrate = report.targetBitrate;
+    }
   });
   // RTT from whichever transport has a selected pair (listen-only clients
   // have no send transport).
@@ -277,6 +286,7 @@ setInterval(async () => {
     shipLog(
       `istatistik: oda="${client.roomId}" kişiler=[${s.participants.join(', ')}] abonelik=${s.subscribedTracks} ` +
         `alınan=${s.audioPacketsReceived} gönderilen=${s.audioPacketsSent} kayıp=${s.audioPacketsLost} ` +
+        `hedef=${s.audioTargetBitrate !== undefined ? Math.round(s.audioTargetBitrate / 1000) + 'kbps' : '-'} ` +
         `rtt=${s.roundTripTime !== undefined ? Math.round(s.roundTripTime * 1000) + 'ms' : '-'} ` +
         `oynatma-tamponu=${s.audioPlayoutDelay !== undefined ? Math.round(s.audioPlayoutDelay * 1000) + 'ms' : '-'} ses-öğeleri=[${playing.join(', ')}]`,
     );
@@ -289,6 +299,7 @@ setInterval(async () => {
     `oynatma tamponu: ${s.audioPlayoutDelay !== undefined ? Math.round(s.audioPlayoutDelay * 1000) + ' ms' : '–'}`,
     `gizlenen ses: %${(s.audioConcealedRatio * 100).toFixed(1)}`,
     `gönderilen ses paketi: ${s.audioPacketsSent}`,
+    `kodlayıcı hedefi: ${s.audioTargetBitrate !== undefined ? Math.round(s.audioTargetBitrate / 1000) + ' kbps' : '–'}`,
   ].join('\n');
 }, 1000);
 

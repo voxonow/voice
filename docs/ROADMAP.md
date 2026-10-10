@@ -389,6 +389,33 @@ bir alıcı–gönderici çiftinin 5 sn'lik pencerede 5'ten az ses paketi almas�
 demo istatistikleri gönderici başına (kayıp, jitter, gizlenen ses, oynatma
 tamponu ham sayaçları) ve mikrofonsuz katılımcıda RTT; `RoomManager.get`.
 
+**Opus bit hızı — karar (2026-10-10): varsayılan 48 kbps.** Önceki
+varsayılan Chrome'un kendi değeriydi: kodlayıcı hedefi **32 kbps**
+(`webrtc-internals` dökümü). LiveKit aynı tarayıcıda **48 kbps** hedefliyor.
+Karşılaştırma (`npm run bench:codec`): aynı kaynak, aynı Chrome Opus
+kodlayıcısı, bizim motor; kaynak Web Audio (yankı engelleme / gürültü
+bastırma / kazanç devre dışı — yalnız codec farkı ölçülür).
+
+| Kaynak | Bit hızı | Gönderilen (ort.) | Spektral uzaklık (orijinale) |
+|---|---|---|---|
+| Gerçek konuşma (iPhone, 24 sn, içerik ~16 kHz'e kadar), 50 Hz–15,5 kHz | 32 kbps | 27,7 kbps | 8,5 dB |
+| ″ | **48 kbps** | 41,9 kbps | **6,8 dB** |
+| TTS (22,05 kHz, içerik ~10 kHz'e kadar), 50 Hz–10 kHz | 32 kbps | 23,7 kbps | 6,8 dB |
+| ″ | 48 kbps | 35,7 kbps | 5,9 dB |
+
+Bant enerjileri iki bit hızında aynı (bant kesilmiyor); fark kodlama
+bozulmasında. Gerçek konuşmada iyileşme TTS'tekinin yaklaşık iki katı.
+Maliyet: konuşan başına gönderilen veri ~%50 artar (28 → 42 kbps);
+sunucu CPU'su paket sayısına bağlı olduğundan değişmez. Sonuçlar headless
+Chromium ve Chrome 154'te aynı. **Kulakla dinleme (kullanıcı, kulaklık,
+sessiz ortam): orijinal, 32 ve 48 kbps arasında fark duyulmadı.** Karar bu
+yüzden kalite kazancına değil, eşitliğe dayanıyor: bugünkü Voxonow (LiveKit)
+48 kbps kullanıyor; yeni motor ondan düşük başlamasın. Maliyet küçük (12
+kişilik odada sunucu çıkışı ~3,7 → 5,5 Mbps; dinleyici başına ~300 → 460
+kbps). Gürültülü ortam, iyi mikrofon ya da müzik gibi durumlarda fark
+duyulabilir — M9'da gözlenecek. 4–8 kHz'te iki bit hızında da ~−2,9 dB düşüş var (bit hızından
+bağımsız; ayrıca incelenecek).
+
 **Açık bulgular**
 - **B1 — RED yok (karar gerekiyor).** mediasoup 3.29 ses için RED'i
   desteklemiyor (`versatica/mediasoup#481`, 2022'den beri açık). Alıcı
@@ -471,6 +498,10 @@ etkisi bu ölçüme **girmez** (o ayrı: M1 B1). Konuşma: macOS TTS (Türkçe,
 konuşmacı, yankılı oda), 5 dB SNR. Gerçek kayıtlar yok. Makine: bu Mac
 (Apple Silicon), headless Chromium. Çevrim dışı adayların sonuçları dört
 koşuda birebir aynı çıktı.
+
+**Sınırlama:** macOS TTS sesi 22,05 kHz üretir; test konuşmasının içeriği
+~10 kHz'de biter. Bu ölçüm 10 kHz üstündeki davranışı göstermez (gerçek
+kayıtlar bunun için de gerekli).
 
 Ölçütler: *gürültü azaltma* = konuşma aralarında girişe göre enerji düşüşü;
 *konuşma değişimi* = konuşma karelerinde çıktı enerjisi ÷ yalnız konuşmanın
@@ -757,6 +788,9 @@ geçer, prod'a ayrıca karar verilmeden çıkmaz.
 
 ## 8. Değişiklik günlüğü
 
+- **2026-10-10** — Opus bit hızı varsayılanı 48 kbps (LiveKit ile aynı);
+  ölçüm M1 altında. `npm run bench:codec` eklendi. M6'ya TTS'in ~10 kHz bant
+  sınırlaması notu eklendi.
 - **2026-10-10** — M1 elle testleri için yerel ağ HTTPS demo ve paket kaybı
   script'i hazırlandı (`docs/LAN-TEST.md`); M6 ilk nesnel ölçümü (Chrome
   yerleşik, RNNoise, Speex, GTCRN, DeepFilterNet3). M1 ve M6 açık.
