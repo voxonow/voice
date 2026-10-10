@@ -195,11 +195,16 @@ if (tls) {
   });
 }
 
-const host = process.env.DEMO_HOST || (tls ? '0.0.0.0' : 'localhost');
+// Plain HTTP mode listens on every interface, as it did before LAN mode.
+// Listening on loopback only made Firefox fail to establish media (ICE failed
+// at once) in CI on Linux — observed and bisected 2026-10-10, mechanism not
+// determined. (A subnet check here would lock out Docker Desktop's port
+// forwarding, which arrives from outside the container's subnet.)
+const host = process.env.DEMO_HOST || (tls ? '0.0.0.0' : undefined);
 server.listen(port, host, () =>
   console.log(
     tls
       ? `demo on https://<this Mac>:${port} (LAN only; signaling proxied to ${voiceUpstream.href})`
-      : `demo on http://${host}:${port} (voice: ${voiceUrl})`,
+      : `demo on http://localhost:${port} (voice: ${voiceUrl})`,
   ),
 );
