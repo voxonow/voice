@@ -4,7 +4,7 @@
 //   npm run dev              build + run
 //   npm run dev -- --no-build  run what is already built (used by e2e tests)
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,11 +35,16 @@ function lanAddress() {
 }
 
 const voicePort = process.env.PORT || '7800';
+// Everything the voice server prints also goes to .dev-logs/voice.log, and the
+// demo page sends its browser-side events to .dev-logs/clients.log.
+const logDir = process.env.DEV_LOG_DIR || join(root, '.dev-logs');
+mkdirSync(logDir, { recursive: true });
+const voiceLog = createWriteStream(join(logDir, 'voice.log'), { flags: 'a' });
 const demoPort = process.env.DEMO_PORT || '5173';
 
 const children = [
   spawn(process.execPath, [join(root, 'server/dist/index.js')], {
-    stdio: 'inherit',
+    stdio: ['ignore', 'pipe', 'pipe'],
     env: {
       ...process.env,
       PORT: voicePort,
@@ -51,9 +56,15 @@ const children = [
   }),
   spawn(process.execPath, [join(root, 'demo/dev-server.mjs')], {
     stdio: 'inherit',
-    env: { ...process.env, DEMO_PORT: demoPort, VOICE_URL: `ws://localhost:${voicePort}/ws` },
+    env: { ...process.env, DEMO_PORT: demoPort, VOICE_URL: `ws://localhost:${voicePort}/ws`, DEV_LOG_DIR: logDir },
   }),
 ];
+for (const stream of [children[0].stdout, children[0].stderr]) {
+  stream.on('data', (chunk) => {
+    process.stdout.write(chunk);
+    voiceLog.write(chunk);
+  });
+}
 
 let stopping = false;
 function stop(code) {

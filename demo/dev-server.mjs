@@ -5,7 +5,7 @@
 // what Voxonow's real API must never do — there, the ticket comes after the
 // user's session and channel permissions have been checked.
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,12 @@ const port = Number(process.env.DEMO_PORT || 5173);
 const voiceUrl = process.env.VOICE_URL || 'ws://localhost:7800/ws';
 const privateKeyPath = process.env.TICKET_PRIVATE_KEY_FILE || join(here, '..', '.dev-keys', 'ticket-private.pem');
 const privateKey = await importPKCS8(readFileSync(privateKeyPath, 'utf8'), 'EdDSA');
+
+// Browser-side events from the demo page, so a developer (or an assistant
+// reading the repo) can diagnose a manual test without copying from each window.
+const clientLogDir = process.env.DEV_LOG_DIR || join(here, '..', '.dev-logs');
+mkdirSync(clientLogDir, { recursive: true });
+const clientLog = join(clientLogDir, 'clients.log');
 
 const SOURCES = ['microphone', 'camera', 'screen_share', 'screen_share_audio'];
 const files = {
@@ -44,7 +50,7 @@ async function readJson(request) {
   let body = '';
   for await (const chunk of request) {
     body += chunk;
-    if (body.length > 4096) throw new Error('body too large');
+    if (body.length > 64 * 1024) throw new Error('body too large');
   }
   return JSON.parse(body || '{}');
 }
@@ -61,6 +67,20 @@ const server = createServer(async (request, response) => {
       const ticket = await mintTicket({ room, name, publish: Array.isArray(publish) ? publish : SOURCES });
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ ticket, voiceUrl }));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/log') {
+      const { client, lines } = await readJson(request);
+      if (typeof client === 'string' && Array.isArray(lines)) {
+        const stamp = new Date().toISOString();
+        const text = lines
+          .filter((line) => typeof line === 'string')
+          .slice(0, 50)
+          .map((line) => `${stamp} [${client.slice(0, 40)}] ${line.slice(0, 500)}\n`)
+          .join('');
+        appendFileSync(clientLog, text);
+      }
+      response.writeHead(204).end();
       return;
     }
     if (request.method === 'GET' && url.pathname === '/healthz') {

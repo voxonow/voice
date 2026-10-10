@@ -12,6 +12,12 @@ export interface DemoStats {
   audioPacketsSent: number;
   /** Seconds, from the selected candidate pair of the send transport. */
   roundTripTime?: number;
+  /**
+   * Average time received audio waits in the jitter buffer before playout
+   * (seconds), worst over subscribed audio tracks. Network RTT plus this is
+   * most of what a listener experiences as delay.
+   */
+  audioPlayoutDelay?: number;
   subscribedTracks: number;
   participants: string[];
 }
@@ -31,11 +37,43 @@ async function fetchTicket(room: string, name: string, publish?: Source[]) {
   return (await response.json()) as { ticket: string; voiceUrl: string };
 }
 
+/** Short browser label for the shared dev log, e.g. "Safari 18" or "Firefox 140". */
+const browserLabel = (() => {
+  const ua = navigator.userAgent;
+  const match =
+    /Firefox\/(\d+)/.exec(ua)?.[0] ??
+    /Edg\/(\d+)/.exec(ua)?.[0] ??
+    /Chrome\/(\d+)/.exec(ua)?.[0] ??
+    (/Version\/(\d+).*Safari/.exec(ua) ? `Safari/${/Version\/(\d+)/.exec(ua)![1]}` : 'unknown');
+  return `${match.replace('/', ' ')} #${Math.random().toString(36).slice(2, 6)}`;
+})();
+
+let pendingLines: string[] = [];
+function shipLog(line: string): void {
+  pendingLines.push(line);
+  if (pendingLines.length === 1) {
+    setTimeout(() => {
+      const lines = pendingLines;
+      pendingLines = [];
+      void fetch('/api/log', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ client: browserLabel, lines }),
+      }).catch(() => {});
+    }, 300);
+  }
+}
+
 function log(message: string): void {
   const line = document.createElement('div');
   line.textContent = `${new Date().toLocaleTimeString()}  ${message}`;
   $('log').prepend(line);
+  shipLog(message);
 }
+
+window.addEventListener('error', (event) => log(`JS hatası: ${event.message}`));
+window.addEventListener('unhandledrejection', (event) => log(`yakalanmamış hata: ${String(event.reason?.message ?? event.reason)}`));
+shipLog(`sayfa açıldı: ${navigator.userAgent}`);
 
 function renderParticipants(): void {
   const list = $('participants');
@@ -45,6 +83,12 @@ function renderParticipants(): void {
     item.textContent = participant.name;
     list.append(item);
   }
+  const status = $('room-status');
+  if (!client?.roomId) status.textContent = '';
+  else if (client.participants.size === 0) {
+    // The most common demo mistake: two windows with different room names.
+    status.textContent = `Oda: "${client.roomId}" — odada senden başka kimse yok. Diğer pencerede de oda adının aynı olduğundan emin ol.`;
+  } else status.textContent = `Oda: "${client.roomId}"`;
 }
 
 function attach(track: RemoteTrack): void {
@@ -54,6 +98,16 @@ function attach(track: RemoteTrack): void {
   element.setAttribute('playsinline', '');
   element.srcObject = new MediaStream([track.track]);
   $('media').append(element);
+  element.play().catch(() => {
+    // Autoplay blocked (Safari can do this): playback needs a click.
+    log('tarayıcı sesi otomatik başlatmadı — "Sesi başlat" düğmesine bas');
+    const button = $<HTMLButtonElement>('unlock-audio');
+    button.hidden = false;
+    button.onclick = () => {
+      for (const media of document.querySelectorAll<HTMLMediaElement>('#media audio, #media video')) void media.play();
+      button.hidden = true;
+    };
+  });
 }
 
 function detach(track: RemoteTrack): void {
@@ -127,6 +181,10 @@ async function stats(): Promise<DemoStats> {
       result.audioPacketsLost += report.packetsLost ?? 0;
       result.audioJitter = Math.max(result.audioJitter, report.jitter ?? 0);
       samples += report.totalSamplesReceived ?? 0;
+      if (report.jitterBufferEmittedCount > 0) {
+        const delay = report.jitterBufferDelay / report.jitterBufferEmittedCount;
+        result.audioPlayoutDelay = Math.max(result.audioPlayoutDelay ?? 0, delay);
+      }
       concealed += report.concealedSamples ?? 0;
     }
   });
@@ -150,28 +208,46 @@ function setJoined(joined: boolean): void {
 $('join').addEventListener('click', () => {
   const room = $<HTMLInputElement>('room').value.trim();
   const name = $<HTMLInputElement>('name').value.trim() || 'Misafir';
-  join(room, name).catch((error: Error) => {
-    log(`hata: ${error.message}`);
+  log(`katıl'a basıldı: oda="${room}" ad="${name}"`);
+  const listenOnly = $<HTMLInputElement>('listen-only').checked;
+  if (listenOnly) log('mikrofonsuz katılım');
+  join(room, name, { microphone: !listenOnly }).catch((error: Error) => {
+    log(`hata: ${error.name}: ${error.message}`);
     client = undefined;
     setJoined(false);
   });
 });
-$('leave').addEventListener('click', () => void leave());
+$('leave').addEventListener('click', () => {
+  log("ayrıl'a basıldı");
+  void leave();
+});
 $('mute').addEventListener('click', async () => {
   if (!client || !micTrack) return;
   const muted = $('mute').textContent === 'Sustur';
   await client.setMuted('microphone', muted);
   $('mute').textContent = muted ? 'Sesi aç' : 'Sustur';
+  log(muted ? 'mikrofon susturuldu' : 'mikrofon açıldı');
 });
 
+let tick = 0;
 setInterval(async () => {
   if (!client) return;
   const s = await stats();
+  if (tick++ % 5 === 0) {
+    const playing = [...document.querySelectorAll<HTMLMediaElement>('#media audio')].map((m) => (m.paused ? 'durdu' : 'çalıyor'));
+    shipLog(
+      `istatistik: oda="${client.roomId}" kişiler=[${s.participants.join(', ')}] abonelik=${s.subscribedTracks} ` +
+        `alınan=${s.audioPacketsReceived} gönderilen=${s.audioPacketsSent} kayıp=${s.audioPacketsLost} ` +
+        `rtt=${s.roundTripTime !== undefined ? Math.round(s.roundTripTime * 1000) + 'ms' : '-'} ` +
+        `oynatma-tamponu=${s.audioPlayoutDelay !== undefined ? Math.round(s.audioPlayoutDelay * 1000) + 'ms' : '-'} ses-öğeleri=[${playing.join(', ')}]`,
+    );
+  }
   $('stats').textContent = [
     `RTT: ${s.roundTripTime !== undefined ? Math.round(s.roundTripTime * 1000) + ' ms' : '–'}`,
     `alınan ses paketi: ${s.audioPacketsReceived}`,
     `kayıp: ${s.audioPacketsLost}`,
     `jitter: ${Math.round(s.audioJitter * 1000)} ms`,
+    `oynatma tamponu: ${s.audioPlayoutDelay !== undefined ? Math.round(s.audioPlayoutDelay * 1000) + ' ms' : '–'}`,
     `gizlenen ses: %${(s.audioConcealedRatio * 100).toFixed(1)}`,
     `gönderilen ses paketi: ${s.audioPacketsSent}`,
   ].join('\n');

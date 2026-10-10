@@ -35,6 +35,8 @@ export default defineConfig({
           RTC_PORT_BASE: '40100',
           NUM_WORKERS: '2',
           LOG_LEVEL: 'warn',
+          // Keep test runs out of the developer's manual-test logs.
+          DEV_LOG_DIR: 'test-results/dev-logs',
         },
       },
 });

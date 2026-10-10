@@ -37,6 +37,14 @@
         padding: 0.75rem;
         min-height: 3rem;
       }
+      label {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      #room-status {
+        font-weight: 600;
+      }
       video {
         width: 240px;
         border-radius: 8px;
@@ -48,13 +56,16 @@
     <h1>Voxonow Voice — demo</h1>
     <p>Geliştirme sayfası. Bilet, yerel geliştirme anahtarıyla imzalanır.</p>
     <fieldset>
-      <input id="room" value="demo-room" aria-label="Oda" />
-      <input id="name" placeholder="Adın" aria-label="Ad" />
+      <label>Oda <input id="room" value="demo-room" /></label>
+      <label>Adın <input id="name" placeholder="ör. Önder" /></label>
+      <label><input type="checkbox" id="listen-only" /> Mikrofonsuz katıl (sadece dinle)</label>
       <button id="join">Katıl</button>
       <button id="leave" disabled>Ayrıl</button>
       <button id="mute" disabled>Sustur</button>
+      <button id="unlock-audio" hidden>Sesi başlat</button>
     </fieldset>
-    <h2>Katılımcılar</h2>
+    <p id="room-status" role="status"></p>
+    <h2>Odadaki diğer kişiler</h2>
     <ul id="participants"></ul>
     <div id="media"></div>
     <h2>Bağlantı</h2>
