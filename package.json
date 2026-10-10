@@ -1,0 +1,27 @@
+{
+  "name": "voxonow-voice",
+  "private": true,
+  "packageManager": "npm@10.9.3",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "protocol",
+    "client",
+    "server",
+    "demo"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=protocol && npm run build --workspace=client && npm run build --workspace=server && npm run build --workspace=demo",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p e2e/tsconfig.json",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "npm run build && playwright test",
+    "keys": "node demo/scripts/generate-keys.mjs",
+    "dev": "node scripts/dev.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0",
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
+  }
+}

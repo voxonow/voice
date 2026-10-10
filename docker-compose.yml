@@ -1,0 +1,42 @@
+# Local development in Docker: voice server + demo page.
+#
+#   npm run keys            # once: creates .dev-keys/
+#   docker compose up --build
+#   open http://localhost:5173 in two browser windows
+services:
+  voice:
+    build:
+      context: .
+      target: server
+    environment:
+      PORT: '7800'
+      # Browsers on this machine reach the media ports through localhost.
+      RTC_ANNOUNCED_ADDRESS: 127.0.0.1
+      RTC_PORT_BASE: '40000'
+      NUM_WORKERS: '2'
+      TICKET_PUBLIC_KEY_FILE: /keys/ticket-public.pem
+      ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+    volumes:
+      # Only the public key goes into the voice server.
+      - ./.dev-keys/ticket-public.pem:/keys/ticket-public.pem:ro
+    ports:
+      - '7800:7800'
+      # One port per worker, UDP and TCP (RTC_PORT_BASE .. + NUM_WORKERS - 1).
+      - '40000-40001:40000-40001/udp'
+      - '40000-40001:40000-40001/tcp'
+
+  demo:
+    build:
+      context: .
+      target: demo
+    environment:
+      DEMO_PORT: '5173'
+      VOICE_URL: ws://localhost:7800/ws
+      TICKET_PRIVATE_KEY_FILE: /keys/ticket-private.pem
+    volumes:
+      - ./.dev-keys/ticket-private.pem:/keys/ticket-private.pem:ro
+    ports:
+      - '5173:5173'
+    depends_on:
+      voice:
+        condition: service_healthy

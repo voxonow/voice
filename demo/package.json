@@ -1,0 +1,18 @@
+{
+  "name": "@voxonow/voice-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "start": "node dev-server.mjs"
+  },
+  "dependencies": {
+    "@voxonow/voice-client": "^0.0.0",
+    "jose": "^6.2.12"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

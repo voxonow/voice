@@ -13,7 +13,7 @@ sayılmaz.
 
 | Aşama | Konu | Durum |
 |---|---|---|
-| M0 | Hazırlık ve teknik prototip | 🟡 Başladı |
+| M0 | Hazırlık ve teknik prototip | ✅ 2026-10-10 |
 | M1 | Ses çekirdeği | ⚪ |
 | M2 | Bağlantı dayanıklılığı ve TURN | ⚪ |
 | M3 | Konuşma özellikleri | ⚪ |
@@ -168,7 +168,9 @@ coturn  ── kısıtlı ağlar için TURN
 - Repoda gizli anahtar yoktur; test anahtarları yalnız testte üretilir.
 - Bağımlılıklar `npm audit` ile CI'da kontrol edilir.
 - Prod sunucusunda açılacak UDP aralığı en küçük gerekli aralıktır; güvenlik
-  duvarı kuralları bu belgeye yazılır.
+  duvarı kuralları bu belgeye yazılır. (M0 itibarıyla: worker başına 1 UDP +
+  1 TCP port, `RTC_PORT_BASE`'den başlayarak; sinyalleşme portu yalnız ters
+  vekil sunucu arkasından.)
 
 **Tarayıcı matrisi** — Chrome, Safari ve Firefox **M1'den itibaren** her
 aşamada denenir; M9'a bırakılmaz. iOS Safari'nin otomatik oynatma kısıtları ve
@@ -206,17 +208,62 @@ değerler, test çıktısı özeti ve varsa sapmalar.
 - Şema doğrulaması, mesaj boyutu sınırı, Origin kontrolü.
 
 **Kabul kriterleri**
-- [ ] `npm ci` + typecheck + birim testleri yerelde ve CI'da yeşil.
-- [ ] Uçtan uca test: iki headless Chromium aynı odaya katılır; her biri
+- [x] `npm ci` + typecheck + birim testleri yerelde ve CI'da yeşil.
+- [x] Uçtan uca test: iki headless Chromium aynı odaya katılır; her biri
       karşı taraftan **5 sn içinde ≥ 50 ses paketi** alır (`inbound-rtp`).
-- [ ] Oda izolasyonu testi: A odasındaki istemci B odasındaki yayından hiç
+- [x] Oda izolasyonu testi: A odasındaki istemci B odasındaki yayından hiç
       paket almaz.
-- [ ] Reddedilen biletler testi: yanlış imza, süresi geçmiş, henüz geçerli
+- [x] Reddedilen biletler testi: yanlış imza, süresi geçmiş, henüz geçerli
       olmayan, yanlış `aud`, tekrar kullanılan `jti` → bağlantı kapanır.
-- [ ] Bilet göndermeyen bağlantı ≤ 5 sn içinde kapanır.
-- [ ] Docker imajı derlenir; `docker compose up` ile demo çalışır.
+- [x] Bilet göndermeyen bağlantı ≤ 5 sn içinde kapanır.
+- [x] Docker imajı derlenir; `docker compose up` ile demo çalışır.
 
-**Sonuçlar** — _doldurulacak_
+**Sonuçlar** — 2026-10-10
+
+- **Uçtan uca (Playwright, Chromium, sahte mikrofon):** iki katılımcı her iki
+  yönde ≥ 50 ses paketine katılımdan **~2 sn** içinde ulaştı (sınır 5 sn).
+  Oda izolasyonu: ayrı odadaki katılımcı 0 paket, 0 abonelik, 0 katılımcı
+  gördü; kendi yayını sunucuya ulaşıyordu. Ayrılma diğer tarafa ≤ 5 sn'de
+  yansıdı. Aynı 3 test hem doğrudan çalıştırmada hem `docker compose up`
+  yığınında geçti.
+- **Sunucu testleri (vitest, gerçek mediasoup worker'ları): 41/41.**
+  Bilet ret durumları: başka anahtar, süresi geçmiş, `nbf` gelecekte, yanlış
+  `aud`/`iss`, `jti` yok / kısa / tekrar, `exp` geçerli ama 10 dk'dan eski,
+  bilinmeyen kaynak, bozuk oda kimliği, ad yok, HS256, `alg: none`, JWT değil.
+  Sinyalleşme: bilet gelmezse kapatma (varsayılan 5 sn), ilk mesaj `join`
+  değilse kapatma, `join` sürerken ikinci mesaj, protokol sürümü uyuşmazlığı,
+  izinsiz Origin (403), yanlış yol (404), bozuk JSON (1007), aşırı büyük mesaj
+  (1009), mesaj seli (4008), aynı kullanıcının ikinci bağlantısı (4009, eski
+  kapanır), izinsiz kaynak yayınlama (`forbidden`), yanlış medya türü,
+  başkasının transport'una erişim (`not_found`), yön başına tek transport,
+  bilinmeyen metot / bozuk veri, son katılımcı çıkınca odanın kapanması.
+- **Bağımlılık denetimi:** `npm audit --audit-level=high` → 0 açık.
+- **Docker:** sunucu konteyneri `node` (uid 1000) kullanıcısıyla çalışıyor;
+  konteynerde yalnız açık anahtar var. Sunucu imajı 407 MB (küçültme M7'de).
+
+**M0'da alınan tasarım kararları**
+- **Worker başına tek medya portu** (mediasoup `WebRtcServer`, UDP + TCP).
+  Güvenlik duvarında açılacak aralık = worker sayısı kadar port
+  (`RTC_PORT_BASE … RTC_PORT_BASE + NUM_WORKERS − 1`), binlerce port değil.
+- **Bilet:** Ed25519 (`EdDSA`), en fazla 10 dk yaşında, 5 sn saat toleransı,
+  `jti` tek kullanımlık. Sunucu özel anahtar verilirse başlamaz.
+- **Protokol paketi ikiye ayrıldı:** ana giriş bağımlılıksız tip/sabit
+  (istemci paketine zod girmez), `/schemas` sunucu doğrulaması. Şemalarla
+  tiplerin aynı olduğu derleme anında kanıtlanır.
+- **Origin:** tarayıcıdan gelen bağlantılarda izin listesi zorunlu; Origin
+  göndermeyen (mobil / yerel) istemciler bilet ile kabul edilir.
+- **Aynı kullanıcı aynı odaya ikinci kez katılırsa** eski bağlantı kapanır
+  (LiveKit'teki aynı kimlik davranışı).
+- **Tüketiciler (consumer) duraklatılmış oluşturulur,** istemci izi
+  bağladıktan sonra devam ettirilir; ilk paketler kaybolmaz.
+
+**Sonraki aşamalara devredilenler**
+- `jti` hafızası süreç içinde tutuluyor → tek sunucu örneği varsayımı. Birden
+  fazla ses sunucusu olursa ortak depo gerekir (M7).
+- Worker çökmesinde odalar kapatılıyor ve worker yeniden başlatılıyor; bunun
+  testi ve istemcinin otomatik geri dönüşü M2/M7'de.
+- Safari ve Firefox M0'da denenmedi; §4 gereği M1'den itibaren her aşamada.
+- Sunucu imaj boyutu (407 MB).
 
 ### M1 — Ses çekirdeği
 
@@ -471,6 +518,8 @@ geçer, prod'a ayrıca karar verilmeden çıkmaz.
 
 ## 8. Değişiklik günlüğü
 
+- **2026-10-10** — M0 tamamlandı (sonuçlar M0 altında). Ek kararlar: worker
+  başına tek medya portu, protokol paketinin tip/şema olarak ikiye ayrılması.
 - **2026-10-10** — Belge oluşturuldu. Kararlar: K1–K11. Kaynak: Voxonow sohbet
   analizi ve iki dış değerlendirme (6 teknik düzeltme + 7 ek konu + oda bazlı
   motor seçimi, bağımsız geliştirme, güvenli geçiş, `pipeToRouter` notu).

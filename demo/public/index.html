@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voxonow Voice Demo</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        max-width: 720px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      fieldset {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        border: 1px solid #8884;
+        border-radius: 8px;
+        padding: 1rem;
+      }
+      input {
+        padding: 0.4rem;
+      }
+      button {
+        padding: 0.4rem 0.9rem;
+      }
+      pre,
+      #log {
+        font-family: ui-monospace, monospace;
+        font-size: 0.85rem;
+        background: #8881;
+        border-radius: 8px;
+        padding: 0.75rem;
+        min-height: 3rem;
+      }
+      video {
+        width: 240px;
+        border-radius: 8px;
+        background: #000;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Voxonow Voice — demo</h1>
+    <p>Geliştirme sayfası. Bilet, yerel geliştirme anahtarıyla imzalanır.</p>
+    <fieldset>
+      <input id="room" value="demo-room" aria-label="Oda" />
+      <input id="name" placeholder="Adın" aria-label="Ad" />
+      <button id="join">Katıl</button>
+      <button id="leave" disabled>Ayrıl</button>
+      <button id="mute" disabled>Sustur</button>
+    </fieldset>
+    <h2>Katılımcılar</h2>
+    <ul id="participants"></ul>
+    <div id="media"></div>
+    <h2>Bağlantı</h2>
+    <pre id="stats">–</pre>
+    <h2>Olaylar</h2>
+    <div id="log"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

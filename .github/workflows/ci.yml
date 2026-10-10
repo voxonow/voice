@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - name: Unit and integration tests
+        run: npm test
+      - name: Dependency audit (high and critical)
+        run: npm audit --audit-level=high
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: End-to-end (two real browsers, real media)
+        run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7
+
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build server image
+        run: docker build --target server -t voxonow-voice:ci .
+      - name: Build demo image
+        run: docker build --target demo -t voxonow-voice-demo:ci .
+      - name: Server image runs and reports healthy
+        run: |
+          mkdir -p keys
+          node -e "const {generateKeyPairSync}=require('crypto');const {publicKey}=generateKeyPairSync('ed25519');require('fs').writeFileSync('keys/pub.pem',publicKey.export({type:'spki',format:'pem'}))"
+          docker run -d --name voice -p 7800:7800 \
+            -e RTC_ANNOUNCED_ADDRESS=127.0.0.1 -e NUM_WORKERS=1 \
+            -e TICKET_PUBLIC_KEY="$(cat keys/pub.pem)" voxonow-voice:ci
+          for i in $(seq 1 30); do curl -fsS localhost:7800/healthz && exit 0; sleep 1; done
+          docker logs voice; exit 1
