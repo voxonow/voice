@@ -1,0 +1,17 @@
+# LiveKit for the A/B benchmark only (bench/quality.mjs --engine livekit).
+# Same server version as team-comms' local LiveKit, but announcing the LAN
+# address: Firefox never pairs ICE with a loopback address, so a 127.0.0.1
+# node_ip silently excludes Firefox from the comparison.
+port: 7890
+bind_addresses:
+  - 0.0.0.0
+rtc:
+  tcp_port: 7891
+  port_range_start: 50100
+  port_range_end: 50140
+  use_external_ip: false
+  node_ip: ${NODE_IP}
+keys:
+  benchkey: bench-livekit-secret-local-only-not-a-real-secret
+logging:
+  level: warn

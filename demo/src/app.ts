@@ -18,8 +18,24 @@ export interface DemoStats {
    * most of what a listener experiences as delay.
    */
   audioPlayoutDelay?: number;
+  /** Per received audio track, keyed by the sender's display name. */
+  perTrack: TrackStats[];
   subscribedTracks: number;
   participants: string[];
+}
+
+export interface TrackStats {
+  from: string;
+  packetsReceived: number;
+  packetsLost: number;
+  /** Seconds. */
+  jitter: number;
+  concealedRatio: number;
+  /** Seconds; average jitter-buffer wait before playout, since the start. */
+  playoutDelay?: number;
+  /** Raw counters, so a sampler can compute the delay over an interval. */
+  jitterBufferDelay: number;
+  jitterBufferEmittedCount: number;
 }
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -168,6 +184,7 @@ async function stats(): Promise<DemoStats> {
     audioJitter: 0,
     audioConcealedRatio: 0,
     audioPacketsSent: 0,
+    perTrack: [],
     subscribedTracks: client?.tracks.size ?? 0,
     participants: [...(client?.participants.values() ?? [])].map((p) => p.name),
   };
@@ -175,8 +192,24 @@ async function stats(): Promise<DemoStats> {
   const { send, recv } = await client.getStats();
   let samples = 0;
   let concealed = 0;
+  const senderByTrackId = new Map<string, string>();
+  for (const track of client.tracks.values()) {
+    senderByTrackId.set(track.track.id, client.participants.get(track.peerId)?.name ?? track.peerId);
+  }
   recv?.forEach((report) => {
     if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+      const trackSamples = report.totalSamplesReceived ?? 0;
+      result.perTrack.push({
+        from: senderByTrackId.get(report.trackIdentifier) ?? '?',
+        packetsReceived: report.packetsReceived ?? 0,
+        packetsLost: report.packetsLost ?? 0,
+        jitter: report.jitter ?? 0,
+        concealedRatio: trackSamples > 0 ? (report.concealedSamples ?? 0) / trackSamples : 0,
+        playoutDelay:
+          report.jitterBufferEmittedCount > 0 ? report.jitterBufferDelay / report.jitterBufferEmittedCount : undefined,
+        jitterBufferDelay: report.jitterBufferDelay ?? 0,
+        jitterBufferEmittedCount: report.jitterBufferEmittedCount ?? 0,
+      });
       result.audioPacketsReceived += report.packetsReceived ?? 0;
       result.audioPacketsLost += report.packetsLost ?? 0;
       result.audioJitter = Math.max(result.audioJitter, report.jitter ?? 0);
@@ -191,10 +224,16 @@ async function stats(): Promise<DemoStats> {
   result.audioConcealedRatio = samples > 0 ? concealed / samples : 0;
   send?.forEach((report) => {
     if (report.type === 'outbound-rtp' && report.kind === 'audio') result.audioPacketsSent += report.packetsSent ?? 0;
-    if (report.type === 'candidate-pair' && report.nominated && report.currentRoundTripTime !== undefined) {
-      result.roundTripTime = report.currentRoundTripTime;
-    }
   });
+  // RTT from whichever transport has a selected pair (listen-only clients
+  // have no send transport).
+  for (const report of [send, recv]) {
+    report?.forEach((r) => {
+      if (r.type === 'candidate-pair' && r.nominated && r.currentRoundTripTime !== undefined) {
+        result.roundTripTime ??= r.currentRoundTripTime;
+      }
+    });
+  }
   return result;
 }
 

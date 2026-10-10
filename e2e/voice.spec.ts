@@ -7,6 +7,7 @@ interface DemoStats {
   audioPacketsSent: number;
   subscribedTracks: number;
   participants: string[];
+  perTrack: { from: string; packetsReceived: number }[];
 }
 
 async function joinRoom(page: Page, room: string, name: string): Promise<void> {
@@ -85,4 +86,37 @@ test('a participant leaving is seen by the others and their audio stops', async 
   await bob.evaluate(() => (window as any).voiceDemo.leave());
   await expect.poll(async () => (await stats(alice)).participants, { timeout: 5_000 }).toEqual([]);
   await expect.poll(async () => (await stats(alice)).subscribedTracks, { timeout: 5_000 }).toBe(0);
+});
+
+test('muting stops audio at the source, and unmuting brings it back', async ({ browser }) => {
+  const alice = await (await browser.newContext()).newPage();
+  const bob = await (await browser.newContext()).newPage();
+  await joinRoom(alice, 'e2e-mute', 'Alice');
+  await joinRoom(bob, 'e2e-mute', 'Bob');
+  await expectAudioPackets(bob, 50, 5_000);
+
+  /** Packets Alice sends, and Bob receives from Alice, over `ms`. */
+  async function flow(ms: number): Promise<{ sent: number; received: number }> {
+    const before = [await stats(alice), await stats(bob)] as const;
+    await bob.waitForTimeout(ms);
+    const after = [await stats(alice), await stats(bob)] as const;
+    const fromAlice = (s: DemoStats) => s.perTrack.find((t) => t.from === 'Alice')?.packetsReceived ?? 0;
+    return {
+      sent: after[0].audioPacketsSent - before[0].audioPacketsSent,
+      received: fromAlice(after[1]) - fromAlice(before[1]),
+    };
+  }
+
+  await alice.click('#mute');
+  await alice.waitForTimeout(500); // let in-flight packets land
+  const muted = await flow(2_000);
+  // Acceptance (M1): nothing reaches the other side while muted — and nothing
+  // leaves the device either.
+  expect(muted).toEqual({ sent: 0, received: 0 });
+
+  await alice.click('#mute');
+  await alice.waitForTimeout(500);
+  const unmuted = await flow(2_000);
+  expect(unmuted.sent).toBeGreaterThan(30);
+  expect(unmuted.received).toBeGreaterThan(30);
 });

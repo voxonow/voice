@@ -40,6 +40,24 @@ npm run test:e2e     # iki gerçek Chromium, gerçek WebRTC sesi
 
 Çalışan bir yığına karşı uçtan uca test: `E2E_BASE_URL=http://localhost:5173 npx playwright test`.
 
+## Ölçüm araçları (`bench/`)
+
+```sh
+npm run build
+npm run bench:latency                                  # gecikme A/B: bizim motor ↔ LiveKit
+npm run bench:quality -- --browsers chromium,firefox,webkit --duration 60
+npm run bench:quality -- --browsers 'chromium*8' --duration 45   # worker CPU ölçeklemesi
+```
+
+- `bench:latency`: aynı sayfada bip gönderip geliş anını aynı ses saatiyle
+  ölçer (mikrofon/hoparlör donanımı hariç). Yerel LiveKit gerekir.
+- `bench:quality`: N katılımcı, çift başına paket akışı, kayıp, jitter,
+  gizlenen ses, oynatma tamponu, RTT ve mediasoup worker CPU/bellek.
+  `--engine livekit` aynı ölçümü LiveKit'e karşı yapar (`bench/livekit.yaml`
+  ile LAN adresini duyuran bir LiveKit), `--external ws://…/ws` çalışan bir
+  sunucuyu (ör. `tc netem` altındaki Docker konteyneri) ölçer.
+- Sonuçlar `test-results/bench/` altına JSON olarak yazılır.
+
 ## Sunucu yapılandırması
 
 | Değişken | Varsayılan | Açıklama |

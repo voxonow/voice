@@ -141,6 +141,9 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
       // cheap when silent.
       codecOptions: track.kind === 'audio' ? { opusFec: true, opusDtx: true } : undefined,
       stopTracks: false,
+      // Muted means nothing leaves the device — not silence frames the server
+      // then has to drop.
+      zeroRtpOnPause: true,
     });
     this.producers.set(source, producer);
     return producer.id;

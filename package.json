@@ -19,7 +19,8 @@
     "test:e2e": "npm run build && playwright test",
     "keys": "node demo/scripts/generate-keys.mjs",
     "dev": "node scripts/dev.mjs",
-    "bench:latency": "npm run build && npm run latency --workspace=bench"
+    "bench:latency": "npm run build && npm run latency --workspace=bench",
+    "bench:quality": "node bench/quality.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.0",

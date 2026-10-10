@@ -318,6 +318,10 @@ export class RoomManager {
     return this.rooms.has(id);
   }
 
+  get(id: string): Room | undefined {
+    return this.rooms.get(id);
+  }
+
   async getOrCreate(id: string): Promise<Room> {
     const existing = this.rooms.get(id);
     if (existing) return existing;

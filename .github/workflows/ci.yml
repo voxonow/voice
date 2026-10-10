@@ -29,8 +29,8 @@ jobs:
         run: npm test
       - name: Dependency audit (high and critical)
         run: npm audit --audit-level=high
-      - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+      - name: Install browsers (Chromium, Firefox, WebKit)
+        run: npx playwright install --with-deps chromium firefox webkit
       - name: End-to-end (two real browsers, real media)
         run: npx playwright test
       - uses: actions/upload-artifact@v7

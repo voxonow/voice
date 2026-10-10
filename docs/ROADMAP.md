@@ -13,19 +13,24 @@ sayılmaz.
 
 | Aşama | Konu | Durum |
 |---|---|---|
-| M0 | Hazırlık ve teknik prototip | ✅ 2026-10-10 |
-| M1 | Ses çekirdeği | ⚪ |
+| M0 | Hazırlık ve teknik prototip | ✅ 2026-10-10 — otomatik kriterler; elle kalite onayı açık |
+| M1 | Ses çekirdeği | 🟡 Başladı |
+| M6 | Gürültü bastırma (M1 ile paralel) | ⚪ |
 | M2 | Bağlantı dayanıklılığı ve TURN | ⚪ |
 | M3 | Konuşma özellikleri | ⚪ |
 | M4 | Kamera ve ekran paylaşımı | ⚪ |
 | M5 | Sunucu kontrolü ve olay teslimi | ⚪ |
-| M6 | Gürültü bastırma | ⚪ |
 | M7 | İşletme, ölçek ve yük testi | ⚪ |
 | M8 | Voxonow entegrasyonu (staging) | ⚪ |
 | M9 | Gerçek cihaz ve saha testleri | ⚪ |
 | M10 | Prod geçişi ve LiveKit'in kaldırılması | ⚪ |
 
 ⚪ başlamadı · 🟡 sürüyor · ✅ kabul kriterleri karşılandı
+
+**Sıra:** M0 → **M1 ∥ M6** → M2 → M3 → M4 → M5 → M7 → M8 → M9 → M10.
+M6 (gürültü bastırma) M1'in hemen arkasına alındı ve onunla paralel yürür:
+istemci tarafında (tarayıcıda) çalıştığı için sunucu çekirdeğine bağlı değildir.
+Kimlikler (M0–M10) değişmedi; yalnız sıra değişti.
 
 ---
 
@@ -91,12 +96,13 @@ staging'e ve prod'a dokunulmaz.**
 **K3 — Güvenli geçiş.** Yük testleri prod sunucusunda **asla** yapılmaz; ayrı,
 geçici bir Hetzner sunucusunda yapılır. Prod'a geçiş, geri dönüş ve eski
 istemciler birlikte tasarlanır (bkz. [§6](#6-geçiş-ve-geri-dönüş-tasarımı)).
-Yeni motor, M7 yük testleri ve M9 saha testleri geçilmeden prodda varsayılan
-olmaz.
+Yeni motor, M7 yük testleri, M9 saha testleri ve **M6 gürültü bastırma
+doğrulaması** geçilmeden prodda varsayılan olmaz.
 
 **K4 — Medya çekirdeği: mediasoup.** Node.js (backend ile aynı dil), olgun,
 mobilde `react-native-webrtc` ile çalışır. Uygunluğu M1/M7/M9 ölçümleriyle
-doğrulanır.
+doğrulanır. _Bilinen eksik: ses için RED yok (M1 B1) — 2026-10-10'da risk
+olarak kabul edildi; yeniden açma koşulu M1 B1'de._
 
 **K5 — Ayrı servis, kendi sinyalleşmesi.** Ses sunucusu ayrı bir süreç /
 container'dır ve kendi WebSocket sinyalleşmesini taşır; Voxonow'un Socket.IO'suna
@@ -241,6 +247,48 @@ değerler, test çıktısı özeti ve varsa sapmalar.
 - **Docker:** sunucu konteyneri `node` (uid 1000) kullanıcısıyla çalışıyor;
   konteynerde yalnız açık anahtar var. Sunucu imajı 407 MB (küçültme M7'de).
 
+- **Gecikme A/B (`npm run bench:latency`, `bench/latency.mjs`):** aynı
+  tarayıcı sayfasında yayıncı Web Audio ile 0,5 sn'de bir 50 ms'lik 1 kHz bip
+  gönderir; abone, bip'in gelişini aynı `AudioContext` saatiyle
+  `AudioWorklet` içinde yakalar. Ölçülen yol: yakalama aktarımı, Opus
+  kodlama, ağ, medya sunucusu, jitter tamponu, çözme. **Fiziksel mikrofon ve
+  kulaklık/hoparlör gecikmesi ölçüm dışındadır** (iki motor için aynıdır).
+  Koşullar: tek Mac (Apple Silicon), headless Chromium (Playwright), iki
+  motor da Docker Desktop içinde (yerel LiveKit: team-comms
+  `livekit-server v1.13.7`, `livekit-client 2.21.0` varsayılanları — bugünkü
+  Voxonow kullanımı), 3 tur × 20 bip = motor başına 60 ölçüm.
+
+  | Motor | Medyan | p90 |
+  |---|---|---|
+  | Yeni motor (mediasoup) | 54 ms | 76 ms |
+  | LiveKit | 69 ms | 71 ms |
+
+  Yeni motor Docker'sız çalıştırıldığında: medyan 54 ms, p90 55 ms — p90'daki
+  fark Docker Desktop'ın UDP katmanına bağlanıyor (kanıtlanmadı; M1'de Linux
+  üzerinde tekrar ölçülür). Sonuç: yeni motor gecikmede LiveKit'ten geri
+  değil.
+- **Elle doğrulama — TAMAMLANMADI.** Otomatik kriterlerin tamamı geçti; elle
+  kalite onayı yok:
+  - Chrome 154 → Safari 26.6 (gerçek Safari), aynı Mac, kablolu mikrofon +
+    kulaklık: ses ulaştı (paket kaybı 0, RTT 1 ms, oynatma tamponu 30 ms),
+    susturma iki yönde çalıştı. **Ancak kullanıcı sesin geç geldiğini ve
+    arka plan seslerinin tamamının duyulduğunu bildirdi.** Gecikme yukarıdaki
+    A/B ile LiveKit'ten farksız ölçüldü; arka plan sesi Krisp'in yokluğundan
+    (bkz. M6). Kalite onayı M6 ve M9'a kadar açık.
+  - Firefox: yalnız otomatik (Playwright, sahte medya); gerçek cihazla
+    denenmedi.
+  - Safari ↔ Chrome otomatik testi WebKit (Playwright) ile yapıldı; WebKit
+    gerçek Safari'nin yerine geçmez.
+- **Elle testte bulunan ve düzeltilen hatalar:** (1) yerel kurulum medyayı
+  `127.0.0.1` ile duyuruyordu; Firefox loopback adresine ICE eşleştirmediği
+  için ses hiç akmıyordu → `npm run dev` artık LAN adresini duyuruyor;
+  (2) ICE kurulamadığında demo sessiz kalıyordu → istemciye
+  `mediaStateChanged` olayı eklendi; (3) demo kutularının görünür etiketi
+  yoktu, iki pencere farklı odalara girdi → etiketler ve "odada yalnızsın"
+  uyarısı; (4) Safari otomatik oynatma engeline karşı "Sesi başlat" düğmesi.
+  Teşhis için `npm run dev` sunucu ve tarayıcı loglarını `.dev-logs/`
+  klasörüne yazıyor.
+
 **M0'da alınan tasarım kararları**
 - **Worker başına tek medya portu** (mediasoup `WebRtcServer`, UDP + TCP).
   Güvenlik duvarında açılacak aralık = worker sayısı kadar port
@@ -267,6 +315,8 @@ değerler, test çıktısı özeti ve varsa sapmalar.
 
 ### M1 — Ses çekirdeği
 
+🟡 Başladı (2026-10-10).
+
 **Kapsam**
 - Opus ses, mikrofon aç/kapat (sunucuda producer pause/resume), ayrılma.
 - Birden fazla oda; her CPU çekirdeği için bir worker (başlangıç), odalar
@@ -280,12 +330,131 @@ değerler, test çıktısı özeti ve varsa sapmalar.
 
 **Kabul kriterleri**
 - [ ] Chrome + Safari + Firefox, 3 katılımcı, **30 dk** kesintisiz konuşma.
-- [ ] Temiz ağda: paket kaybı < %1, RTT p95 kayda geçer (yerel ağ hedefi
-      < 50 ms).
+      _Otomatik kısmı geçti (Chrome + Firefox + WebKit, 30 dk, 0 kesinti);
+      **gerçek Safari ve gerçek cihazlarla elle 30 dk açık.**_
+- [x] Temiz ağda: paket kaybı < %1, RTT p95 kayda geçer (yerel ağ hedefi
+      < 50 ms). _%0 kayıp, RTT p95 1 ms (tek makine)._
 - [ ] Yapay ağ bozulması (`tc netem`): %5 kayıp + 100 ms gecikme altında
       ses anlaşılır kalır; gizlenen ses oranı ve jitter ölçülüp yazılır.
-- [ ] Katılımcı başına worker CPU ve bellek ölçülür ve yazılır.
-- [ ] Mikrofon kapatıldığında karşı tarafa paket gitmediği ölçümle doğrulanır.
+      _Ölçüldü ve yazıldı (aşağıda); bozulma yalnız sunucu → alıcı yönünde
+      uygulanabildi. **"Anlaşılır" kısmı kulakla doğrulanmadı;** RED eksikliği
+      bulgusu (B1) açık._
+- [x] Katılımcı başına worker CPU ve bellek ölçülür ve yazılır. _macOS
+      ölçümü; Linux ölçümü M7._
+- [x] Mikrofon kapatıldığında karşı tarafa paket gitmediği ölçümle doğrulanır.
+      _Susturulan cihazdan da hiç paket çıkmıyor (e2e testi)._
+
+**Sonuçlar** — 2026-10-10 (ara checkpoint; **M1 tamamlanmadı** — gerçek
+cihaz testleri açık; tamamlanana kadar production'a geçiş yok)
+
+Ölçüm aracı: `bench/quality.mjs` (`npm run bench:quality`). Tek Mac
+(Apple Silicon, macOS), tarayıcılar headless Playwright (Chromium 156,
+Firefox 157, WebKit 27.2) ve sahte mikrofon; tek mediasoup worker. "Kesinti":
+bir alıcı–gönderici çiftinin 5 sn'lik pencerede 5'ten az ses paketi alması
+(Opus konuşmada 50 paket/sn, DTX sessizliğinde ~2,5 paket/sn).
+
+- **30 dk, Chrome + Firefox + WebKit:** 0 kesinti; %0 kayıp; RTT p50/p95
+  1/1 ms; jitter p95 6 ms; her çift her 5 sn'de ≥ 250 paket (≈ 50/sn);
+  worker CPU ort. %5,7 (tek çekirdeğin yüzdesi), bellek en fazla 8,3 MB ve
+  30 dk boyunca büyümedi. Kalıcı oynatma tamponu: WebKit'in **gönderdiği**
+  ses ~90 ms, diğer bütün çiftler 30–35 ms (bkz. B2).
+- **Worker CPU (yalnız ses, tek oda, 45 sn, Chromium):**
+
+  | Katılımcı | İletilen ses akışı N×(N−1) | Worker CPU | Bellek |
+  |---|---|---|---|
+  | 2 | 2 | %2,6 | 9,5 MB |
+  | 4 | 12 | %7,5 | 10,1 MB |
+  | 8 | 56 | %18,2 | 11,3 MB |
+  | 12 | 132 | %28,5 | 12,8 MB |
+
+  CPU katılımcı sayısıyla değil **iletilen akış sayısıyla** büyüyor: akış
+  başına ~%0,2 (+ ~%2 taban). Tarayıcılar aynı makinede çalışırken macOS'ta
+  ölçüldü; sunucu (Linux) kapasitesi M7'de ölçülür.
+- **`tc netem`, 100 ms gecikme + %5 kayıp (yalnız sunucu → alıcı; Docker
+  Desktop çekirdeğinde ters yön için `ifb` yok), 90 sn, 3 tarayıcı:** 0 kesinti;
+  ölçülen kayıp %5,09; RTT 102/104 ms; jitter p95 7 ms; gizlenen ses çift
+  başına %4,3–5,2 (≈ kayıp oranı). Aynı koşulda LiveKit: RED kullanan Chrome ↔
+  WebKit çiftlerinde %0,2–0,3, Firefox'lu çiftlerde %4,5–5 (bkz. B1).
+- **A/B, temiz ağ, aynı 3 tarayıcı, 60 sn (LiveKit: `bench/livekit.yaml`,
+  aynı sürüm, LAN adresi):** kesinti/kayıp ikisinde de 0; kalıcı oynatma
+  tamponu bizde WebKit kaynaklı çiftlerde ~90 ms, LiveKit'te ~61 ms; diğer
+  çiftler eşit (30–35 ms).
+- **Testler:** sunucu 42/42 (yeni: oda → worker yerleşimi); uçtan uca 6/6
+  (yeni: susturma kaynakta 0 paket; Chrome ↔ Firefox ve Chrome ↔ WebKit iki
+  yönlü ses + iki yönlü susturma). Uçtan uca paket Linux'ta da (Playwright
+  imajı) 6/6; CI artık Chromium, Firefox ve WebKit kuruyor.
+
+**M1 değişiklikleri:** susturmada cihazdan hiç RTP çıkmaz (`zeroRtpOnPause`;
+önceden sunucuya saniyede ~5 sessizlik paketi gidiyor, sunucu iletmiyordu);
+demo istatistikleri gönderici başına (kayıp, jitter, gizlenen ses, oynatma
+tamponu ham sayaçları) ve mikrofonsuz katılımcıda RTT; `RoomManager.get`.
+
+**Açık bulgular**
+- **B1 — RED yok (karar gerekiyor).** mediasoup 3.29 ses için RED'i
+  desteklemiyor (`versatica/mediasoup#481`, 2022'den beri açık). Alıcı
+  yönündeki kayıpta LiveKit, RED destekleyen tarayıcılar (Chrome, Safari)
+  arasında kaybı neredeyse tamamen telafi ediyor; biz edemiyoruz. mediasoup
+  alıcıların en kötü kayıp oranını gönderene yansıtıyor (Opus FEC yolu
+  açık), ancak ölçümde FEC kaybı telafi etmedi; Opus bit hızını 64 kbps'e
+  çıkarmak da değiştirmedi.
+  **Karar (2026-10-10): eksiklik bilinen kalite riski olarak kabul edildi;
+  mediasoup çatallanmıyor, K4 değişmedi.** Bilinen risk: kayıplı ağda
+  (alıcı yönünde %5) gizlenen ses ≈ %4,5 (aynı koşulda LiveKit'in RED kullanan
+  çiftlerinde %0,2–0,3). **Yeniden açma koşulu:** gerçek cihaz ve kayıplı ağ
+  testlerinde (M1 elle testleri, M9) kalite kabul edilemez bulunursa K4
+  yeniden açılır; o zaman mediasoup'a katkı/çatallama ile motor değiştirme
+  seçenekleri gerçek ölçümlerle karşılaştırılır.
+- **B2 — WebKit'in gönderdiği ses ~30 ms daha uzun tamponlanıyor.** Jitter
+  bizde 5–7 ms, LiveKit'te 2 ms. Ses için transport-wide-cc'yi kapatmak, DTX'i
+  kapatmak ve bit hızını artırmak etkisiz çıktı. **Sebep bilinmiyor; gerçek
+  Safari'de yeniden ölçülmeden bir nedene (RED dahil) bağlanmaz** (WebKit ≠
+  Safari). Açık bulgu.
+- **B3 — Oda büyüdükçe CPU N² büyür** (her ses her dinleyiciye). Büyük odalar
+  için yalnız konuşanların sesini iletmek gibi bir strateji M3/M7 kararı.
+- **B4 — team-comms'taki yerel LiveKit `node_ip: 127.0.0.1` kullanıyor;**
+  Firefox yerelde ona bağlanamıyor (bizde düzeltilen hatanın aynısı). Bu
+  çalışmanın sınırı gereği team-comms'a dokunulmadı.
+- **B5 — Ağ bozulması yalnız tek yönde test edilebildi;** iki yönlü test
+  Linux'ta (M2/M7).
+
+**Elle yapılması gerekenler (M1'i kapatmak için)**
+- Gerçek Safari + Chrome + Firefox, gerçek mikrofon/kulaklık, 3 kişi, 30 dk.
+- Kayıplı ağda (ör. macOS Network Link Conditioner, %5 kayıp) sesin
+  anlaşılırlığını kulakla değerlendirme.
+
+### M6 — Gürültü bastırma (M1 ile paralel)
+
+**Neden öne alındı:** 2026-10-10 elle testinde arka plan seslerinin tamamı
+duyuldu. Bugünkü Voxonow'da bunu Krisp bastırıyor; Krisp yalnız LiveKit
+Cloud'da çalışır, yeni motorla gelmez. Kullanıcının doğrudan duyduğu fark
+budur. **Gürültü bastırma bu aşamanın kriterleriyle doğrulanmadan yeni motor
+production'a alınamaz** (K3, M10).
+
+**Kapsam** — Krisp'in yerine geçecek çözüm **test sonuçlarıyla** seçilir.
+RNNoise, Krisp'in eşdeğeri kabul edilmez.
+- Adaylar, Krisp ile (bugünkü Voxonow / LiveKit Cloud) karşılaştırılır:
+  - tarayıcının yerleşik gürültü bastırması (`noiseSuppression`; referans),
+  - RNNoise (WASM),
+  - uygun diğer açık kaynak modeller (ör. DeepFilterNet'in tarayıcıda
+    çalışan sürümleri; lisansı ve boyutu ayrıca kontrol edilir).
+- Değerlendirme boyutları: **ses kalitesi, konuşma doğallığı, eklenen
+  gecikme, CPU tüketimi, yankı davranışı.**
+- İşlem sırası: gürültü bastırma yankı engellemeden **sonra** çalışır.
+- **RED / paket kaybı etkisiyle karıştırılmaz:** gürültü bastırma
+  karşılaştırmaları kayıpsız ağda yapılır; kayıplı ağ davranışı (M1 B1) ayrı
+  ölçülür ve ayrı raporlanır.
+- Sunucu çekirdeğinden bağımsızdır (istemcide ses işleme); M1 ile paralel
+  yürür, `@voxonow/voice-client`'a isteğe bağlı bir işlemci olarak eklenir.
+
+**Kabul kriterleri**
+- [ ] Aynı kayıtlı örnekler (klavye, fan, sokak, yankılı oda, konuşma üstüne
+      konuşma) üzerinde karşılaştırmalı dinleme sonuçları yazılır; Krisp
+      referans alınır. Konuşma doğallığı (kesik/robotik ses) ayrıca not edilir.
+- [ ] Eklenen gecikme `bench/latency` ile ölçülür (hedef ≤ 20 ms).
+- [ ] CPU etkisi masaüstünde ve düşük donanımlı bir telefonda ölçülür.
+- [ ] Yankı kontrolüyle birlikte gerçek cihazlarda denenir (hoparlör +
+      mikrofon, kulaklıksız).
+- [ ] Seçim ve gerekçesi bu belgeye yazılır.
 
 **Sonuçlar** — _doldurulacak_
 
@@ -317,7 +486,10 @@ değerler, test çıktısı özeti ve varsa sapmalar.
 - [ ] Wi-Fi → mobil veri geçişi: test senaryolarının **%90'ında ≤ 5 sn**
       içinde ses geri gelir; kalanında otomatik yeniden katılım devreye girer.
       Ölçülen dağılım yazılır.
-- [ ] UDP tamamen kapalı bir ağdan TURN/TCP veya TURN/TLS 443 ile bağlanılır.
+- [ ] UDP'nin tamamen engellendiği bir ağda **TURN/TCP** ve **TURN/TLS 443**
+      ile ayrı ayrı bağlanılır ve ses **iki yönde** akar (alınan paket
+      sayısıyla ölçülür). WebRtcServer'ın tek port kullanması tek başına bütün
+      ağ senaryolarının çalıştığını kanıtlamaz; bu test onu kanıtlar.
 - [ ] coturn üzerinden özel IP aralıklarına erişim denemesi reddedilir.
 
 **Sonuçlar** — _doldurulacak_
@@ -392,24 +564,6 @@ değerler, test çıktısı özeti ve varsa sapmalar.
 
 **Sonuçlar** — _doldurulacak_
 
-### M6 — Gürültü bastırma
-
-**Kapsam** — Krisp'in yerine geçecek çözüm **test sonuçlarıyla** seçilir.
-RNNoise, Krisp'in eşdeğeri kabul edilmez.
-- Adaylar: tarayıcının yerleşik gürültü bastırması (referans), RNNoise
-  (WASM), gerekirse başka açık kaynak modeller.
-- İşlem sırası: gürültü bastırma yankı engellemeden **sonra** çalışır.
-
-**Kabul kriterleri**
-- [ ] Aynı kayıtlı örnekler (klavye, fan, sokak, yankılı oda) üzerinde
-      karşılaştırmalı dinleme sonuçları yazılır; Krisp referans alınır.
-- [ ] Eklenen gecikme ölçülür (hedef ≤ 20 ms).
-- [ ] Düşük donanımlı bir telefonda CPU etkisi ölçülür.
-- [ ] Yankı kontrolüyle birlikte gerçek cihazlarda denenir (hoparlör + mikrofon).
-- [ ] Seçim ve gerekçesi bu belgeye yazılır.
-
-**Sonuçlar** — _doldurulacak_
-
 ### M7 — İşletme, ölçek ve yük testi
 
 **Kapsam**
@@ -455,6 +609,12 @@ geçer, prod'a ayrıca karar verilmeden çıkmaz.
 - [ ] Aynı kanal hiçbir koşulda iki motora bölünmez (test).
 - [ ] Eski sürüm istemci senaryosu test edilir.
 - [ ] Erişimi kaldırılan kullanıcı yeni motorda da odadan atılır.
+- [ ] Staging sunucusundaki **gerçek güvenlik duvarı kuralları** doğrulanır:
+      yalnız gereken portlar açık (sinyalleşme ters vekil arkasında; worker
+      başına bir UDP + bir TCP medya portu; TURN portları). Docker port
+      eşlemesi güvenlik duvarı yerine sayılmaz.
+- [ ] Sunucuya **dışarıdan port taraması** (TCP ve UDP) yapılır; beklenmeyen
+      açık port olmadığı sonuçla birlikte yazılır.
 
 **Sonuçlar** — _doldurulacak_
 
@@ -475,6 +635,7 @@ geçer, prod'a ayrıca karar verilmeden çıkmaz.
 ### M10 — Prod geçişi ve LiveKit'in kaldırılması
 
 **Kapsam** — bkz. §6.
+- Ön koşul: M6 (gürültü bastırma), M7 ve M9 kabul kriterleri karşılanmış.
 - Prod'da yeni odalar için yeni motor açılır; LiveKit yedekte bekler.
 - Geri dönüş tatbikatı önce staging'de, sonra prod'da yapılır.
 - Sorunsuz bir dönemden sonra LiveKit paketleri, anahtarları ve webhook kodu
@@ -511,6 +672,10 @@ geçer, prod'a ayrıca karar verilmeden çıkmaz.
   düşerse hepsi gider. Ayrı ses sunucusu kararı M7'de.
 - **Coğrafya:** Tek bölge (Avrupa). Uzak kullanıcılar daha yüksek gecikme
   yaşar; bilinçli tercih.
+- **RED (M1 B1) — kabul edilmiş bilinen risk (2026-10-10):** mediasoup ses
+  için RED desteklemiyor; kayıplı ağda Chrome/Safari arasında gizlenen ses
+  ≈ %4,5 (LiveKit RED ile %0,2–0,3). Çatallama yok, K4 değişmedi; gerçek cihaz
+  ve kayıplı ağ testlerinde kalite kabul edilemezse K4 yeniden açılır.
 - **İşletim sorumluluğu:** Ses kesintilerinin teşhisi ve çözümü bizde;
   izleme ve alarm M7'de zorunlu.
 - **Mobil uygulama:** Doğrudan `@voxonow/voice-client` üzerine yapılır;
@@ -518,6 +683,18 @@ geçer, prod'a ayrıca karar verilmeden çıkmaz.
 
 ## 8. Değişiklik günlüğü
 
+- **2026-10-10** — Kararlar: M1 ara checkpoint olarak commit (M1 açık);
+  RED eksikliği bilinen kalite riski olarak kabul, çatallama yok, K4
+  değişmedi (yeniden açma koşulu M1 B1'de); Safari tamponlama farkı açık
+  bulgu, nedene bağlanmadı; M6 RED etkisinden ayrı ölçülür.
+- **2026-10-10** — M1 ara raporu: 30 dk üç tarayıcı otomatik testi, worker
+  CPU ölçeklemesi, netem ve LiveKit A/B ölçümleri; açık bulgular B1–B5 (B1:
+  mediasoup'ta RED yok — karar gerekiyor). M1 tamamlanmadı.
+- **2026-10-10** — M6 (gürültü bastırma) M1'in arkasına alındı, M1 ile
+  paralel; production ön koşulu yapıldı. M2'ye UDP engelli ağda TURN/TCP ve
+  TURN/TLS ile iki yönlü ses testi, M8'e gerçek güvenlik duvarı doğrulaması ve
+  dışarıdan port taraması eklendi. M0'a gecikme A/B sonuçları ve elle
+  doğrulamanın tamamlanmadığı notu eklendi. M1 başladı.
 - **2026-10-10** — M0 tamamlandı (sonuçlar M0 altında). Ek kararlar: worker
   başına tek medya portu, protokol paketinin tip/şema olarak ikiye ayrılması.
 - **2026-10-10** — Belge oluşturuldu. Kararlar: K1–K11. Kaynak: Voxonow sohbet
