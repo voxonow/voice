@@ -632,7 +632,18 @@ describe('close codes during a rejoin keep their meaning', () => {
     expect(server.joins.length).toBe(2);
   });
 
-  it('join lost on the way (server closes 4001 "join timeout"): retried, not final', async () => {
+  it('join lost or late on the way (4012 JoinTimeout): retried', async () => {
+    const alice = await connect('alice');
+    server.closeJoinWith = CloseCode.JoinTimeout;
+    server.closeJoinReason = 'join timeout';
+    server.drop('alice', 1006);
+    await settle(3_000);
+    server.closeJoinWith = undefined;
+    await settle();
+    expect(alice.events).toEqual(['reconnecting:1006', 'reconnected']);
+  });
+
+  it('older server (4001 with the reason "join timeout"): still retried, by the compatibility path', async () => {
     const alice = await connect('alice');
     server.closeJoinWith = CloseCode.AuthRequired;
     server.closeJoinReason = 'join timeout';
@@ -643,14 +654,25 @@ describe('close codes during a rejoin keep their meaning', () => {
     expect(alice.events).toEqual(['reconnecting:1006', 'reconnected']);
   });
 
-  it('any other 4001 while rejoining (malformed join) stays final', async () => {
-    const alice = await connect('alice');
-    server.closeJoinWith = CloseCode.AuthRequired;
-    server.closeJoinReason = 'malformed join';
-    server.drop('alice', 1006);
+  for (const reason of ['malformed join', 'join first', '']) {
+    it(`any other 4001 while rejoining (${reason || 'no reason'}) stays final`, async () => {
+      const alice = await connect('alice');
+      server.closeJoinWith = CloseCode.AuthRequired;
+      server.closeJoinReason = reason;
+      server.drop('alice', 1006);
+      await settle();
+      expect(alice.events).toEqual(['reconnecting:1006', 'disconnected:4001']);
+      expect(server.joins.length).toBe(2);
+    });
+  }
+
+  it('a 4012 on the very first join is not retried (no rejoin before a call exists)', async () => {
+    server.closeJoinWith = CloseCode.JoinTimeout;
+    const client = new VoiceClient({ url: 'ws://fake/ws', WebSocket: FakeWebSocket as any, getTicket: async () => 'alice:r1:1', network: new FakeNetwork() });
+    await expect(client.join('alice:r1:0')).rejects.toThrow();
     await settle();
-    expect(alice.events).toEqual(['reconnecting:1006', 'disconnected:4001']);
-    expect(server.joins.length).toBe(2);
+    expect(client.state).toBe('disconnected');
+    expect(server.joins.length).toBe(1);
   });
 
   it('room closed (4010) / shutdown (4011) while rejoining: keep trying within the budget', async () => {

@@ -177,3 +177,57 @@ test('alongside the server WebSocket ping/pong (direct, no proxy): 40 s without 
   expect(await eventTypes(bob)).toEqual([]);
   expect((await stats(alice)).state).toBe('connected');
 });
+
+test.describe('join problems during a rejoin', () => {
+  /** Alice in a room, then her signaling drops abruptly (1006) with `plan` applied to the next joins. */
+  async function dropWithJoinPlan(browser: Browser, plan: SignalingProxy['joinPlan']) {
+    const alice = await participant(browser, `lv-join-${Date.now()}`, 'Alice');
+    const joins = proxy.joins;
+    proxy.joinPlan = plan;
+    proxy.terminateClients();
+    await expect.poll(() => has(alice, 'reconnecting:1006')).toBe(true);
+    return { alice, joins };
+  }
+  const durationOf = async (page: Page, from: string, to: string) => {
+    const list = await events(page);
+    return (list.find((e) => `${e.type}${e.code !== undefined ? `:${e.code}` : ''}` === to)!.at - list.find((e) => `${e.type}:${e.code}` === from)!.at) / 1000;
+  };
+
+  test('join lost on the way: the server closes 4012, the client retries and gets back in', async ({ browser }) => {
+    const { alice, joins } = await dropWithJoinPlan(browser, ['drop']);
+    await expect.poll(() => has(alice, 'reconnected'), { timeout: 20_000 }).toBe(true);
+    expect(proxy.serverCloses).toContain(4012);
+    expect(proxy.joins).toBe(joins + 2);
+    expect(await durationOf(alice, 'reconnecting:1006', 'reconnected')).toBeGreaterThanOrEqual(5);
+  });
+
+  test('join delayed past the limit (6 s): 4012, retried, back in', async ({ browser }) => {
+    const { alice, joins } = await dropWithJoinPlan(browser, [6_000]);
+    await expect.poll(() => has(alice, 'reconnected'), { timeout: 25_000 }).toBe(true);
+    expect(proxy.serverCloses).toContain(4012);
+    expect(proxy.joins).toBe(joins + 2);
+  });
+
+  test('older server (4001 "join timeout" instead of 4012): retried through the compatibility path', async ({ browser }) => {
+    proxy.mode.legacyJoinTimeout = true;
+    const { alice } = await dropWithJoinPlan(browser, ['drop']);
+    await expect.poll(() => has(alice, 'reconnected'), { timeout: 20_000 }).toBe(true);
+    expect(proxy.serverCloses).toContain(4012); // what the real server sent, rewritten to 4001 by the proxy
+  });
+
+  test('malformed join (4001): not retried, the call ends', async ({ browser }) => {
+    const { alice, joins } = await dropWithJoinPlan(browser, ['corrupt']);
+    await expect.poll(() => has(alice, 'disconnected:4001'), { timeout: 15_000 }).toBe(true);
+    await alice.waitForTimeout(5_000);
+    expect(proxy.joins).toBe(joins + 1);
+    expect(await eventTypes(alice)).toEqual(['reconnecting:1006', 'disconnected:4001']);
+  });
+
+  test('ticket rejected every time (4003): a few fresh tickets, then it stops', async ({ browser }) => {
+    const { alice, joins } = await dropWithJoinPlan(browser, ['badticket', 'badticket', 'badticket', 'badticket']);
+    await expect.poll(() => has(alice, 'disconnected:4003'), { timeout: 20_000 }).toBe(true);
+    await alice.waitForTimeout(3_000);
+    expect(proxy.joins).toBe(joins + 3);
+    expect(await eventTypes(alice)).toEqual(['reconnecting:1006', 'disconnected:4003']);
+  });
+});

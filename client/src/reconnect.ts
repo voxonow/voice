@@ -68,6 +68,9 @@ export function classifyClose(code: number): LossKind {
       return 'final';
     case CloseCode.Unauthorized:
       return 'auth';
+    case CloseCode.JoinTimeout:
+      // The join was lost or late on the way (a network problem): retry.
+      return 'retry';
     case CloseCode.RoomClosed:
       return 'now';
     case CloseCode.ServerShutdown:

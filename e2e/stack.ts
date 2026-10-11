@@ -104,7 +104,19 @@ export class SignalingProxy {
     olderServer: false,
     /** Close new connections at once with this code (e.g. 4008). */
     refuseWith: undefined as number | undefined,
+    /** Play a server from before JoinTimeout: forward its 4012 as 4001 "join timeout". */
+    legacyJoinTimeout: false,
   };
+  /**
+   * What happens to the next `join` messages, one entry per join: dropped
+   * (lost on the way), delayed by N ms, corrupted (unsupported protocol
+   * version → malformed join), or sent with a broken ticket signature.
+   */
+  joinPlan: ('drop' | 'corrupt' | 'badticket' | number)[] = [];
+  /** `join` messages seen from browsers. */
+  joins = 0;
+  /** Close codes the server sent towards browsers, in order. */
+  readonly serverCloses: number[] = [];
   /** Browser connections accepted so far. */
   connections = 0;
   /** `ping` requests seen from browsers. */
@@ -129,6 +141,22 @@ export class SignalingProxy {
         try {
           ({ method, id } = JSON.parse(text));
         } catch {}
+        if (method === 'join') {
+          this.joins++;
+          const plan = this.joinPlan.shift();
+          if (plan === 'drop') return;
+          let out = text;
+          if (plan === 'corrupt' || plan === 'badticket') {
+            const message = JSON.parse(text);
+            if (plan === 'corrupt') message.data.protocol = 99;
+            else message.data.ticket = `${message.data.ticket.slice(0, -6)}AAAAAA`;
+            out = JSON.stringify(message);
+          }
+          const forward = () => (upstream.readyState === upstream.OPEN ? upstream.send(out) : queue.push(out));
+          if (typeof plan === 'number') setTimeout(forward, plan);
+          else forward();
+          return;
+        }
         if (method === 'ping') {
           this.pings++;
           if (this.mode.olderServer) {
@@ -149,13 +177,20 @@ export class SignalingProxy {
         else send();
       });
       upstream.on('close', (code, reason) => {
+        this.serverCloses.push(code);
         if (code === 1005 || code === 1006) client.terminate();
+        else if (code === 4012 && this.mode.legacyJoinTimeout) client.close(4001, 'join timeout');
         else client.close(code, reason.toString());
       });
       client.on('close', () => upstream.close());
       upstream.on('error', () => client.terminate());
       client.on('error', () => upstream.terminate());
     });
+  }
+
+  /** Drops every current browser connection abruptly (the browser sees 1006). */
+  terminateClients(): void {
+    for (const c of this.wss.clients) c.terminate();
   }
 
   /** Closes every current browser connection with `code`, as the server would. */

@@ -18,26 +18,45 @@ afterAll(async () => {
 const connect = (options?: { origin?: string; path?: string }) => TestClient.connect(server, options);
 
 describe('connection admission', () => {
-  it('closes a connection that never joins (default limit ≤ 5 s)', async () => {
+  it('closes a connection that never joins with JoinTimeout (4012, default limit ≤ 5 s)', async () => {
     expect(SIGNALING_LIMITS.authTimeoutMs).toBeLessThanOrEqual(5_000);
     const client = await connect();
     const started = Date.now();
-    const { code } = await client.closed;
-    expect(code).toBe(CloseCode.AuthRequired);
+    const closed = await client.closed;
+    expect(closed).toEqual({ code: CloseCode.JoinTimeout, reason: 'join timeout' });
     expect(Date.now() - started).toBeLessThan(1_000);
   });
 
-  it('closes a connection whose first message is not join', async () => {
+  it('a join that arrives after the limit finds the connection closed with 4012', async () => {
     const client = await connect();
-    void client.request('createTransport', { direction: 'send' });
-    expect((await client.closed).code).toBe(CloseCode.AuthRequired);
+    const ticket = await mintTicket(keys);
+    await new Promise((r) => setTimeout(r, 400)); // limit here: 300 ms
+    expect(client.ws.readyState).toBe(client.ws.CLOSED);
+    expect((await client.closed).code).toBe(CloseCode.JoinTimeout);
+    void ticket; // the join it would have sent can no longer arrive
   });
 
-  it('closes a connection that sends a second message while joining', async () => {
+  it('a late but in-time join (just under the limit) is accepted', async () => {
+    const client = await connect();
+    const ticket = await mintTicket(keys);
+    await new Promise((r) => setTimeout(r, 200));
+    expect((await client.join(ticket)).ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 300)); // past the limit: the timer was cleared
+    expect(client.ws.readyState).toBe(client.ws.OPEN);
+    client.close();
+  });
+
+  it('closes a connection whose first message is not join (4001, not a timeout)', async () => {
+    const client = await connect();
+    void client.request('createTransport', { direction: 'send' });
+    expect(await client.closed).toEqual({ code: CloseCode.AuthRequired, reason: 'join first' });
+  });
+
+  it('closes a connection that sends a second message while joining (4001)', async () => {
     const client = await connect();
     void client.join(await mintTicket(keys));
     void client.request('createTransport', { direction: 'send' });
-    expect((await client.closed).code).toBe(CloseCode.AuthRequired);
+    expect(await client.closed).toEqual({ code: CloseCode.AuthRequired, reason: 'join first' });
   });
 
   it('closes on an invalid ticket', async () => {
@@ -59,7 +78,7 @@ describe('connection admission', () => {
   it('closes on a protocol version it does not speak', async () => {
     const client = await connect();
     void client.request('join', { ticket: await mintTicket(keys), protocol: 99 });
-    expect((await client.closed).code).toBe(CloseCode.AuthRequired);
+    expect(await client.closed).toEqual({ code: CloseCode.AuthRequired, reason: 'malformed join' });
   });
 
   it('rejects browser origins that are not allowed', async () => {

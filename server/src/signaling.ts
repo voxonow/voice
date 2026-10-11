@@ -105,7 +105,7 @@ class Connection implements PeerConnection {
   ) {
     this.logger = options.logger.child({ conn: Math.random().toString(36).slice(2, 10) });
     this.bucket = new TokenBucket(limits.messagesPerSecond, limits.messageBurst);
-    this.authTimer = setTimeout(() => this.close(CloseCode.AuthRequired, 'join timeout'), limits.authTimeoutMs);
+    this.authTimer = setTimeout(() => this.close(CloseCode.JoinTimeout, 'join timeout'), limits.authTimeoutMs);
 
     ws.on('message', (raw, isBinary) => this.onMessage(raw, isBinary));
     ws.on('pong', () => {

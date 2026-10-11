@@ -119,6 +119,9 @@ interface Publication {
   placeholder?: MediaStreamTrack;
 }
 
+/** Reason text older servers sent with 4001 for a join timeout (see rejoin()). */
+const LEGACY_JOIN_TIMEOUT_REASON = 'join timeout';
+
 /**
  * One participant's connection to a Voxonow voice room.
  *
@@ -436,11 +439,12 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
       for (const [id, p] of before) this.participants.set(id, p);
       if (this.state !== 'reconnecting') return { ok: false, kind: 'final', code: 4000, reason: 'left' };
       const reason = String((error as Error)?.message ?? error);
-      // 4001 is also how the server answers a join that never arrived ("join
-      // timeout", signaling.ts) — on a bad network that is a lost message, not
-      // a client bug, so it is retried. Other 4001s (malformed or out-of-order
-      // join) stay final. The reason text is the only signal the protocol gives.
-      if (code === CloseCode.AuthRequired && this.lastCloseReason === 'join timeout') {
+      // Compatibility with servers before JoinTimeout (4012): they closed a
+      // join that did not complete in time with 4001 and the reason "join
+      // timeout". Only that exact pair is retried; every other 4001 (malformed
+      // or out-of-order join) stays final. Current servers send 4012, which
+      // classifyClose already retries. Remove once no such server runs.
+      if (code === CloseCode.AuthRequired && this.lastCloseReason === LEGACY_JOIN_TIMEOUT_REASON) {
         return { ok: false, kind: 'retry', code, reason: 'join timeout' };
       }
       if (code !== undefined) return { ok: false, kind: classifyClose(code), code, reason };

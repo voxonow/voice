@@ -69,6 +69,10 @@ describe('classifyClose', () => {
     expect(classifyClose(CloseCode.Replaced)).toBe('final');
     expect(classifyClose(CloseCode.AuthRequired)).toBe('final');
   });
+  it('retries a join timeout (4012), never a malformed or out-of-order join (4001)', () => {
+    expect(classifyClose(CloseCode.JoinTimeout)).toBe('retry');
+    expect(classifyClose(CloseCode.AuthRequired)).toBe('final');
+  });
   it('treats ticket rejection, worker loss, shutdown and network drops differently', () => {
     expect(classifyClose(CloseCode.Unauthorized)).toBe('auth');
     expect(classifyClose(CloseCode.RoomClosed)).toBe('now');

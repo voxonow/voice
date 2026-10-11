@@ -148,7 +148,12 @@ export type Notification = {
 export const CloseCode = {
   /** Sent `leave`. */
   Left: 4000,
-  /** No valid `join` arrived in time, or another message came first. */
+  /**
+   * The first message was not `join`, a second message came while joining, or
+   * the `join` was malformed (e.g. another protocol version): a client bug,
+   * retrying cannot help. (Servers before 4012 also used it, with the reason
+   * "join timeout", for a join that did not complete in time.)
+   */
   AuthRequired: 4001,
   /** The ticket was rejected. A new ticket is needed. */
   Unauthorized: 4003,
@@ -160,4 +165,9 @@ export const CloseCode = {
   RoomClosed: 4010,
   /** The server is shutting down. */
   ServerShutdown: 4011,
+  /**
+   * No `join` completed within the server's limit (5 s): it was lost or
+   * delayed on the way, or never sent. Retrying with a fresh ticket can help.
+   */
+  JoinTimeout: 4012,
 } as const;
