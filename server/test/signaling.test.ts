@@ -139,6 +139,21 @@ describe('joined connections', () => {
     fresh.close();
   });
 
+  it('keeps the room usable when the same user rejoins a room they were alone in', async () => {
+    // A rejoin after a network drop often arrives before the server noticed the
+    // old connection died: replacing the only participant must not close the room.
+    const old = await connect();
+    await old.join(await mintTicket(keys, { sub: 'alone-user', room: 'room-alone' }));
+    const fresh = await connect();
+    const freshJoin = await fresh.join(await mintTicket(keys, { sub: 'alone-user', room: 'room-alone' }));
+
+    expect((await old.closed).code).toBe(CloseCode.Replaced);
+    expect(freshJoin.ok).toBe(true);
+    const transport = await fresh.request('createTransport', { direction: 'recv' });
+    expect(transport.ok).toBe(true);
+    fresh.close();
+  });
+
   it('refuses to publish a source the ticket does not allow', async () => {
     const client = await connect();
     await client.join(await mintTicket(keys, { publish: ['microphone'] }));

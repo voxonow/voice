@@ -19,6 +19,8 @@ export interface DemoStats {
   noiseSuppressor: NsKind | 'none';
   /** State of the suppressor's AudioContext ('running' when audio flows through it). */
   noiseContextState?: AudioContextState;
+  /** The client's connection state ('idle' when not joined). */
+  state: string;
   /**
    * Average time received audio waits in the jitter buffer before playout
    * (seconds), worst over subscribed audio tracks. Network RTT plus this is
@@ -52,11 +54,21 @@ let micTrack: MediaStreamTrack | undefined;
 /** Present only with ?ns=…: the context running the noise suppressor. */
 let nsContext: AudioContext | undefined;
 
+/**
+ * This page's demo identity: one user across all tickets it asks for, so a
+ * rejoin replaces its old connection. ?user=… shares it between tabs (to test
+ * two tabs of one user).
+ */
+const demoUser = new URLSearchParams(location.search).get('user') ?? Math.random().toString(36).slice(2, 12);
+
+/** Connection events, for the end-to-end tests. */
+const events: { type: string; code?: number; reason?: string; at: number }[] = [];
+
 async function fetchTicket(room: string, name: string, publish?: Source[]) {
   const response = await fetch('/api/ticket', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ room, name, publish }),
+    body: JSON.stringify({ room, name, publish, user: demoUser }),
   });
   if (!response.ok) throw new Error(`ticket request failed: ${response.status}`);
   return (await response.json()) as { ticket: string; voiceUrl: string };
@@ -152,7 +164,12 @@ async function join(room: string, name: string, options: { publish?: Source[]; m
   // client's default (48 kbps).
   const audioBitrate = Number(new URLSearchParams(location.search).get('audioBitrate')) || undefined;
   if (audioBitrate) log(`deneysel ses bit hızı: ${audioBitrate / 1000} kbps`);
-  const next = new VoiceClient({ url: voiceUrl, audioMaxBitrate: audioBitrate });
+  const next = new VoiceClient({
+    url: voiceUrl,
+    audioMaxBitrate: audioBitrate,
+    // A lost connection rejoins with a fresh ticket (single use, short-lived).
+    getTicket: async () => (await fetchTicket(room, name, options.publish)).ticket,
+  });
   client = next;
   next.on('participantJoined', (p) => {
     log(`${p.name} katıldı`);
@@ -166,9 +183,20 @@ async function join(room: string, name: string, options: { publish?: Source[]; m
     const label = direction === 'send' ? 'gönderme' : 'alma';
     log(state === 'failed' ? `HATA: ${label} yolu kurulamadı (medya akmıyor)` : `${label} bağlantısı: ${state}`);
   });
+  next.on('reconnecting', ({ code, reason }) => {
+    events.push({ type: 'reconnecting', code, reason, at: performance.now() });
+    log(`bağlantı koptu (${code} ${reason}) — yeniden bağlanılıyor…`);
+    $('room-status').textContent = 'Yeniden bağlanılıyor…';
+  });
+  next.on('reconnected', ({ attempts }) => {
+    events.push({ type: 'reconnected', at: performance.now() });
+    log(`yeniden bağlandı (${attempts}. denemede)`);
+    renderParticipants();
+  });
   next.on('trackSubscribed', attach);
   next.on('trackUnsubscribed', detach);
   next.on('disconnected', ({ code, reason }) => {
+    events.push({ type: 'disconnected', code, reason, at: performance.now() });
     log(`bağlantı kapandı (${code} ${reason})`);
     if (client === next) client = undefined;
     micTrack?.stop();
@@ -213,6 +241,7 @@ async function stats(): Promise<DemoStats> {
     perTrack: [],
     noiseSuppressor: (nsContext && parseNs(new URLSearchParams(location.search).get('ns'))) || 'none',
     noiseContextState: nsContext?.state,
+    state: client?.state ?? 'idle',
     subscribedTracks: client?.tracks.size ?? 0,
     participants: [...(client?.participants.values() ?? [])].map((p) => p.name),
   };
@@ -328,4 +357,4 @@ setInterval(async () => {
 }, 1000);
 
 // Driven by the end-to-end tests.
-Object.assign(window, { voiceDemo: { join, leave, stats } });
+Object.assign(window, { voiceDemo: { join, leave, stats, events } });

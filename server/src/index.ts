@@ -12,5 +12,10 @@ async function shutdown(signal: string): Promise<void> {
   await server.close();
   process.exit(0);
 }
-process.on('SIGTERM', () => void shutdown('SIGTERM'));
-process.on('SIGINT', () => void shutdown('SIGINT'));
+// Prepended: mediasoup adds its own SIGTERM/SIGINT listeners when it starts a
+// worker, and those close the worker at once. Running after them, every room
+// saw its worker die and told clients 4010 (media server error) instead of
+// 4011 (planned shutdown). Our listener runs first and closes the signaling
+// sockets with 4011 synchronously, before any worker goes away.
+process.prependListener('SIGTERM', () => void shutdown('SIGTERM'));
+process.prependListener('SIGINT', () => void shutdown('SIGINT'));

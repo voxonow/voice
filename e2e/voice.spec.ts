@@ -1,5 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 
+// Every test opens its own contexts (each with a fake microphone); close them
+// so they do not pile up in the shared browser (Chromium then fails with
+// "NotReadableError: Could not start audio source").
+test.afterEach(async ({ browser }) => {
+  for (const context of browser.contexts()) await context.close();
+});
+
 // The demo page exposes window.voiceDemo (demo/src/app.ts) so tests drive the
 // real client library against the real server, with real WebRTC media.
 interface DemoStats {

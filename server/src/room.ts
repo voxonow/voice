@@ -101,7 +101,9 @@ export class Room {
     for (const existing of this.peers.values()) {
       if (existing.userId === peer.userId) {
         existing.connection.close(CloseCode.Replaced, 'joined from another connection');
-        this.leave(existing);
+        // Not "last one out": the same user is joining, so the room stays open
+        // (closing it here left the new participant in a closed room).
+        this.leave(existing, { closeIfEmpty: false });
       }
     }
     const participants = [...this.peers.values()].map((other) => other.info);
@@ -115,7 +117,7 @@ export class Room {
     };
   }
 
-  leave(peer: Peer): void {
+  leave(peer: Peer, { closeIfEmpty = true }: { closeIfEmpty?: boolean } = {}): void {
     if (peer.closed) return;
     peer.closed = true;
     // Closing the transports closes the peer's producers and consumers; the
@@ -124,7 +126,7 @@ export class Room {
     peer.recvTransport?.close();
     this.peers.delete(peer.id);
     this.broadcast(peer, { notification: 'participantLeft', data: { peerId: peer.id } });
-    if (this.peers.size === 0) this.close();
+    if (closeIfEmpty && this.peers.size === 0) this.close();
   }
 
   async createTransport(

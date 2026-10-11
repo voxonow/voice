@@ -1,5 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 
+// Every test opens its own contexts (each with a fake microphone); close them
+// so they do not pile up in the shared browser (Chromium then fails with
+// "NotReadableError: Could not start audio source").
+test.afterEach(async ({ browser }) => {
+  for (const context of browser.contexts()) await context.close();
+});
+
 // Demo-only M6 trial (?ns=…). These check the path, not the audio content:
 // the fake microphone is a steady beep that a suppressor may legitimately
 // silence, so audio quality is measured by bench/ns-eval.mjs instead.

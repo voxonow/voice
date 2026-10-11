@@ -80,12 +80,15 @@ const files = {
   '/nsw/band-merge.js': ['dist/nsw/band-merge.js', 'text/javascript; charset=utf-8'],
 };
 
-async function mintTicket({ room, name, publish = SOURCES }) {
+// `user` keeps one identity across tickets, as Voxonow's API does for a real
+// user: a rejoin then replaces the old connection instead of adding a second
+// participant. Without it every ticket is a new demo user.
+async function mintTicket({ room, name, publish = SOURCES, user }) {
   return new SignJWT({ room, name, publish })
     .setProtectedHeader({ alg: 'EdDSA' })
     .setIssuer('voxonow-api')
     .setAudience('voxonow-voice')
-    .setSubject(`demo-${randomUUID()}`)
+    .setSubject(`demo-${user ?? randomUUID()}`)
     .setJti(randomUUID())
     .setIssuedAt()
     .setExpirationTime('2m')
@@ -109,8 +112,8 @@ const handler = async (request, response) => {
   try {
     const url = new URL(request.url ?? '/', 'http://localhost');
     if (request.method === 'POST' && url.pathname === '/api/ticket') {
-      const { room, name, publish } = await readJson(request);
-      if (typeof room !== 'string' || typeof name !== 'string') {
+      const { room, name, publish, user } = await readJson(request);
+      if (typeof room !== 'string' || typeof name !== 'string' || (user !== undefined && !(typeof user === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(user)))) {
         response.writeHead(400).end();
         return;
       }
@@ -120,7 +123,7 @@ const handler = async (request, response) => {
         response.writeHead(400).end();
         return;
       }
-      const ticket = await mintTicket({ room, name, publish: Array.isArray(publish) ? publish : SOURCES });
+      const ticket = await mintTicket({ room, name, publish: Array.isArray(publish) ? publish : SOURCES, user });
       const url = tls ? `wss://${request.headers.host}/ws` : voiceUrl;
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ ticket, voiceUrl: url }));
