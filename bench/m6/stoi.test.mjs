@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { resample, rng } from './audio.mjs';
-import { stoi } from './stoi.mjs';
+import { estoi, stoi } from './stoi.mjs';
 
 // Speech-like test signal: noise bursts with syllable-rate amplitude modulation
 // (strong envelope structure in every band), 4 s at 16 kHz.
@@ -49,3 +49,13 @@ test('downsampling removes content above the new Nyquist', () => {
   const rms = Math.sqrt(down.slice(500, -500).reduce((a, v) => a + v * v, 0) / (down.length - 1000));
   assert.ok(rms < 0.01, `aliased residue rms ${rms}`);
 });
+
+test('ESTOI: identical signals score 1, more noise scores lower', () => {
+  assert.ok(Math.abs(estoi(speech, speech, RATE) - 1) < 1e-6);
+  const light = estoi(speech, mix(speech, white(0.02)), RATE);
+  const heavy = estoi(speech, mix(speech, white(0.3)), RATE);
+  assert.ok(light > heavy, `light ${light} > heavy ${heavy}`);
+});
+// Cross-check against pystoi (not run here: needs Python): on the 54 WAVs of
+// bench-results/ns/2026-10-10T19-18-41-480Z, max |JS − pystoi| was 0.0028
+// for STOI and 0.0020 for ESTOI (2026-10-11).

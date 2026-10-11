@@ -46,11 +46,11 @@ function spectrum(frame) {
 }
 
 /**
- * STOI of `processed` against the clean `reference` (same length, time-aligned,
- * both at `rate` Hz). Returns a value in about [0, 1]; higher = more intelligible.
+ * One-third-octave envelopes (Taal 2011, eq. 1) of the reference and the
+ * processed signal, over the reference's non-silent frames.
  */
 const resampledReference = new WeakMap();
-export function stoi(reference, processed, rate) {
+function envelopes(reference, processed, rate) {
   let x = resampledReference.get(reference);
   if (!x) resampledReference.set(reference, (x = resample(reference, rate, FS)));
   const y = resample(processed, rate, FS);
@@ -67,6 +67,15 @@ export function stoi(reference, processed, rate) {
     Y.push(BANDS.map(([a, b]) => { let e = 0; for (let k = a; k < b; k++) e += sy[k]; return Math.sqrt(e); }));
   }
   if (X.length < N) throw new Error(`STOI needs at least ${N} non-silent frames, got ${X.length}`);
+  return { X, Y };
+}
+
+/**
+ * STOI of `processed` against the clean `reference` (same length, time-aligned,
+ * both at `rate` Hz). Returns a value in about [0, 1]; higher = more intelligible.
+ */
+export function stoi(reference, processed, rate) {
+  const { X, Y } = envelopes(reference, processed, rate);
   const clip = 10 ** (-BETA / 20);
   let total = 0, count = 0;
   for (let m = N - 1; m < X.length; m++) {
@@ -86,6 +95,41 @@ export function stoi(reference, processed, rate) {
       total += num / (Math.sqrt(dx * dy) + 1e-12);
       count++;
     }
+  }
+  return total / count;
+}
+
+/** Zero mean, unit norm. */
+function standardize(v) {
+  const mean = v.reduce((a, x) => a + x, 0) / v.length;
+  const c = v.map((x) => x - mean);
+  const norm = Math.sqrt(c.reduce((a, x) => a + x * x, 0)) + 1e-12;
+  return c.map((x) => x / norm);
+}
+
+/**
+ * Extended STOI (Jensen & Taal 2016, IEEE/ACM TASLP 24(11)): no clipping;
+ * each 384 ms segment is normalised per band over time, then per frame over
+ * bands, so it also rewards keeping the spectral shape within a frame. Better
+ * than STOI for fluctuating interference (keyboard, babble). Same alignment
+ * and length requirements as `stoi`.
+ */
+export function estoi(reference, processed, rate) {
+  const { X, Y } = envelopes(reference, processed, rate);
+  const normalise = (S, m) => {
+    // rows: band j over the segment's N frames
+    const rows = Array.from({ length: J }, (_, j) => standardize(Array.from({ length: N }, (_, i) => S[m - N + 1 + i][j])));
+    // columns: frame i over the J bands
+    const cols = Array.from({ length: N }, (_, i) => standardize(rows.map((r) => r[i])));
+    return cols;
+  };
+  let total = 0, count = 0;
+  for (let m = N - 1; m < X.length; m++) {
+    const xn = normalise(X, m), yn = normalise(Y, m);
+    let d = 0;
+    for (let i = 0; i < N; i++) for (let j = 0; j < J; j++) d += xn[i][j] * yn[i][j];
+    total += d / N;
+    count++;
   }
   return total / count;
 }
