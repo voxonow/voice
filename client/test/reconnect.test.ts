@@ -10,19 +10,25 @@ import {
   type NetworkStatus,
 } from '../src/reconnect.js';
 
-const fail = (kind: 'retry' | 'auth' | 'final' | 'now', code = 1006): AttemptResult => ({ ok: false, kind, code, reason: kind });
+const fail = (kind: 'retry' | 'auth' | 'final' | 'now' | 'limited', code = 1006): AttemptResult => ({ ok: false, kind, code, reason: kind });
 
 class FakeNetwork implements NetworkStatus {
   online = true;
-  private listeners = new Set<() => void>();
+  private onlineListeners = new Set<() => void>();
+  private offlineListeners = new Set<() => void>();
   isOnline = () => this.online;
-  onOnline(listener: () => void) {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+  onOnline(l: () => void) {
+    this.onlineListeners.add(l);
+    return () => void this.onlineListeners.delete(l);
   }
+  onOffline(l: () => void) {
+    this.offlineListeners.add(l);
+    return () => void this.offlineListeners.delete(l);
+  }
+  /** Changes state and fires the matching browser event. */
   set(online: boolean) {
     this.online = online;
-    if (online) for (const l of [...this.listeners]) l();
+    for (const l of [...(online ? this.onlineListeners : this.offlineListeners)]) l();
   }
 }
 
@@ -69,7 +75,7 @@ describe('classifyClose', () => {
     expect(classifyClose(CloseCode.ServerShutdown)).toBe('shutdown');
     expect(classifyClose(1006)).toBe('retry');
     expect(classifyClose(1001)).toBe('retry');
-    expect(classifyClose(CloseCode.RateLimited)).toBe('retry');
+    expect(classifyClose(CloseCode.RateLimited)).toBe('limited');
   });
 });
 
@@ -127,7 +133,7 @@ describe('Reconnector', () => {
     expect(attemptsAt.length).toBe(count);
   });
 
-  it('does not try while offline, does not spend budget offline, and tries at once when back', async () => {
+  it('does not try while offline, does not spend budget offline, and tries soon (0–1 s) when back', async () => {
     const network = new FakeNetwork();
     network.online = false;
     const { reconnector, attemptsAt, result } = setup([{ ok: true }], { network });
@@ -137,7 +143,7 @@ describe('Reconnector', () => {
     expect(result.gaveUp).toBeUndefined();
     network.set(true);
     await vi.runAllTimersAsync();
-    expect(attemptsAt).toEqual([120_000]);
+    expect(attemptsAt).toEqual([120_500]); // random 0.5 × 1 s spread
     expect(result.recovered).toBe(true);
   });
 
@@ -156,6 +162,46 @@ describe('Reconnector', () => {
     // Offline is noticed when the next attempt is due (11.625 s); budget spent
     // until then counts, the 98 s after do not: 110 s + (30 − 11.625) s.
     expect(elapsed()).toBe(110_000 + 30_000 - 11_625);
+  });
+
+  it('going offline cancels the pending attempt at once and stops the budget clock there', async () => {
+    const network = new FakeNetwork();
+    const { reconnector, attemptsAt, result } = setup([fail('retry')], { network });
+    reconnector.start('retry');
+    await vi.advanceTimersByTimeAsync(1_000); // attempt at 375 failed, next due at 1 125
+    network.set(false); // the offline event, at 1 000
+    await vi.advanceTimersByTimeAsync(100_000);
+    expect(attemptsAt).toEqual([375]);
+    network.set(true); // at 101 000: budget left 29 s, first attempt within 1 s
+    await vi.runAllTimersAsync();
+    expect(attemptsAt[1]).toBe(101_500);
+    expect(result.gaveUp?.code).toBe(RECONNECT_TIMEOUT_CODE);
+    expect(Date.now()).toBe(101_000 + 29_000);
+  });
+
+  it('rate limited (4008): first try after 15–20 s, and only one', async () => {
+    const { reconnector, attemptsAt, result } = setup([fail('limited', 4008)]);
+    reconnector.start('limited');
+    await vi.runAllTimersAsync();
+    expect(attemptsAt).toEqual([17_500]);
+    expect(result.gaveUp?.code).toBe(4008);
+  });
+
+  it('rate limited during a rejoin: one long wait, one more try, then stop', async () => {
+    const { reconnector, attemptsAt, result } = setup([fail('limited', 4008), fail('limited', 4008)]);
+    reconnector.start('retry');
+    await vi.runAllTimersAsync();
+    expect(attemptsAt).toEqual([375, 375 + 17_500]);
+    expect(result.gaveUp?.code).toBe(4008);
+  });
+
+  it('rate-limit wait counts against the 30 s budget', async () => {
+    const { reconnector, attemptsAt, result } = setup([fail('retry')]);
+    reconnector.start('limited');
+    await vi.runAllTimersAsync();
+    expect(attemptsAt[0]).toBe(17_500);
+    expect(result.gaveUp?.code).toBe(RECONNECT_TIMEOUT_CODE);
+    expect(Date.now()).toBe(30_000);
   });
 
   it('allows a limited number of ticket rejections, then stops', async () => {

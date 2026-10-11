@@ -1,5 +1,6 @@
 import { Device, types } from 'mediasoup-client';
 import {
+  CloseCode,
   PROTOCOL_VERSION,
   SOURCE_KIND,
   type Method,
@@ -13,6 +14,8 @@ import {
 } from '@voxonow/voice-protocol';
 import { Emitter } from './emitter.js';
 import {
+  HEARTBEAT_TIMEOUT_CODE,
+  MEDIA_FAILED_CODE,
   RECONNECT_DEFAULTS,
   Reconnector,
   browserNetwork,
@@ -116,9 +119,6 @@ interface Publication {
   placeholder?: MediaStreamTrack;
 }
 
-/** Close code for a media path that failed while signaling stayed up (client-side only). */
-const MEDIA_FAILED_CODE = 4901;
-
 /**
  * One participant's connection to a Voxonow voice room.
  *
@@ -149,8 +149,17 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
   private notificationQueue: Promise<void> = Promise.resolve();
   private readonly reconnectOptions: ReconnectOptions;
   private reconnector?: Reconnector;
-  /** Close code of the socket that ended the current attempt, if the server sent one. */
+  /** Close code and reason of the socket that ended the current attempt, if the server sent one. */
   private lastCloseCode?: number;
+  private lastCloseReason = '';
+  // Application heartbeat (see startLiveness).
+  private heartbeatTimer?: ReturnType<typeof setTimeout>;
+  private heartbeatSupported = true;
+  private heartbeatMissed = 0;
+  /** When the last ping was sent / when any ping was last answered (ms epoch). */
+  private lastPingAt?: number;
+  private lastPongAt = 0;
+  private unsubscribeOnline?: () => void;
 
   constructor(private readonly options: VoiceClientOptions) {
     super();
@@ -163,6 +172,7 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
     try {
       const joined = await this.establish(ticket);
       this.state = 'connected';
+      this.startLiveness();
       // The map, not the join snapshot: notifications may have changed it since.
       for (const participant of this.participants.values()) this.emit('participantJoined', participant);
       return { peerId: joined.peerId, roomId: joined.roomId };
@@ -308,6 +318,7 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
     const ws = new Impl(this.options.url);
     this.ws = ws;
     this.lastCloseCode = undefined;
+    this.lastCloseReason = '';
     ws.onmessage = (event) => this.onMessage(event.data);
     return new Promise((resolve, reject) => {
       const timer =
@@ -337,6 +348,7 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
   /** The signaling socket closed (server, network, or ourselves through leave). */
   private onSocketClosed(code: number, reason: string): void {
     this.lastCloseCode = code;
+    this.lastCloseReason = reason;
     this.rejectPending(reason || 'connection closed');
     // During join() or a rejoin attempt the awaiting code handles it.
     if (this.state === 'connected') this.onSessionLost(code, reason);
@@ -359,6 +371,7 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
       attempt: ({ remainingMs }) => this.rejoin(remainingMs),
       onRecovered: () => {
         this.state = 'connected';
+        this.startLiveness();
         this.emit('reconnected', { peerId: this.peerId!, attempts: this.reconnector?.attemptCount ?? 0 });
       },
       onGiveUp: (giveUpCode, giveUpReason) => {
@@ -423,6 +436,13 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
       for (const [id, p] of before) this.participants.set(id, p);
       if (this.state !== 'reconnecting') return { ok: false, kind: 'final', code: 4000, reason: 'left' };
       const reason = String((error as Error)?.message ?? error);
+      // 4001 is also how the server answers a join that never arrived ("join
+      // timeout", signaling.ts) — on a bad network that is a lost message, not
+      // a client bug, so it is retried. Other 4001s (malformed or out-of-order
+      // join) stay final. The reason text is the only signal the protocol gives.
+      if (code === CloseCode.AuthRequired && this.lastCloseReason === 'join timeout') {
+        return { ok: false, kind: 'retry', code, reason: 'join timeout' };
+      }
       if (code !== undefined) return { ok: false, kind: classifyClose(code), code, reason };
       if (error instanceof VoiceError && error.code === 'unauthorized') return { ok: false, kind: 'auth', code: 4003, reason };
       return { ok: false, kind: 'retry' satisfies LossKind, code: 0, reason };
@@ -580,6 +600,79 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
     this.pending.clear();
   }
 
+  /**
+   * Application heartbeat while connected. Every `heartbeatIntervalMs` the
+   * client sends a ping and checks the previous interval: if no ping at all
+   * was answered since the previous one was sent, that is a miss; any answer
+   * (however late, to any ping) resets the count. `heartbeatMisses` misses in
+   * a row (10–15 s of silence with the defaults) mean the connection is gone
+   * even though the socket has not closed (a dead network often never
+   * delivers a close), and the usual rejoin takes over.
+   *
+   * Only the ping's answer counts, not other traffic: notifications from the
+   * server prove only the server→client direction, and a dead client→server
+   * direction (our audio controls and requests lost) must be detected too.
+   *
+   * Misses are counted per check, not by wall-clock age, so a throttled
+   * background tab (timers firing late) does not look like a dead server, and
+   * a slow answer still counts when it arrives. A server that predates `ping`
+   * answers bad_request: the heartbeat then stops for this session, quietly.
+   */
+  private startLiveness(): void {
+    this.stopLiveness();
+    this.heartbeatSupported = true;
+    this.heartbeatMissed = 0;
+    this.lastPingAt = undefined;
+    this.lastPongAt = 0;
+    // Back online while connected: check at once, the path may have changed.
+    this.unsubscribeOnline = (this.options.network ?? browserNetwork).onOnline(() => {
+      if (this.state === 'connected' && this.heartbeatSupported) this.sendPing();
+    });
+    this.scheduleHeartbeat();
+  }
+
+  private stopLiveness(): void {
+    if (this.heartbeatTimer !== undefined) clearTimeout(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
+    this.unsubscribeOnline?.();
+    this.unsubscribeOnline = undefined;
+  }
+
+  private scheduleHeartbeat(): void {
+    this.heartbeatTimer = setTimeout(() => this.heartbeatTick(), this.reconnectOptions.heartbeatIntervalMs);
+  }
+
+  private heartbeatTick(): void {
+    this.heartbeatTimer = undefined;
+    if (this.state !== 'connected' || !this.heartbeatSupported) return;
+    const silent = this.lastPingAt !== undefined && this.lastPongAt < this.lastPingAt;
+    this.heartbeatMissed = silent ? this.heartbeatMissed + 1 : 0;
+    if (this.heartbeatMissed >= this.reconnectOptions.heartbeatMisses) {
+      this.closeSocketQuietly();
+      this.onSessionLost(HEARTBEAT_TIMEOUT_CODE, 'voice server stopped answering');
+      return;
+    }
+    this.sendPing();
+    this.scheduleHeartbeat();
+  }
+
+  private sendPing(): void {
+    this.lastPingAt = Date.now();
+    this.request('ping', {}).then(
+      () => {
+        this.lastPongAt = Date.now();
+      },
+      (error) => {
+        if (error instanceof VoiceError && error.code === 'bad_request') {
+          // Older server without `ping`: stop asking, keep the call.
+          this.heartbeatSupported = false;
+          this.stopLiveness();
+        }
+        // Timeouts and closed sockets: the checks above decide.
+      },
+    );
+  }
+
   /** Closes our own socket without it counting as a loss. */
   private closeSocketQuietly(): void {
     const ws = this.ws;
@@ -596,6 +689,7 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
    * rejoin; participants too, so a rejoin can report only what changed.
    */
   private dropSession(reason: string): void {
+    this.stopLiveness();
     this.rejectPending(reason || 'connection closed');
     for (const consumerId of [...this.consumers.keys()]) this.removeConsumer(consumerId);
     for (const producer of this.producers.values()) producer.close();
@@ -614,6 +708,7 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
     if (this.state === 'disconnected') return;
     const wasActive = this.state !== 'idle';
     this.state = 'disconnected';
+    this.stopLiveness();
     this.reconnector?.cancel();
     for (const publication of this.publications.values()) publication.placeholder?.stop();
     if (wasActive) this.emit('disconnected', { code, reason });

@@ -17,6 +17,20 @@ export interface ReconnectOptions {
   maxAuthFailures: number;
   /** Longest wait for the signaling socket to open during a rejoin. */
   connectTimeoutMs: number;
+  /** When the browser comes back online, the next attempt is spread over 0..this. */
+  onlineSpreadMs: number;
+  /**
+   * After 4008 (rate limited). The protocol carries no retry-after, so: wait
+   * this long (+ 0..rateLimitSpreadMs), and allow only this many retries after
+   * a rate-limit close before stopping.
+   */
+  rateLimitDelayMs: number;
+  rateLimitSpreadMs: number;
+  maxRateLimitRetries: number;
+  /** Application heartbeat: one ping per interval while connected. */
+  heartbeatIntervalMs: number;
+  /** Consecutive unanswered checks that mean the connection is gone. */
+  heartbeatMisses: number;
 }
 
 export const RECONNECT_DEFAULTS: ReconnectOptions = {
@@ -26,6 +40,12 @@ export const RECONNECT_DEFAULTS: ReconnectOptions = {
   shutdownSpreadMs: 5_000,
   maxAuthFailures: 2,
   connectTimeoutMs: 10_000,
+  onlineSpreadMs: 1_000,
+  rateLimitDelayMs: 15_000,
+  rateLimitSpreadMs: 5_000,
+  maxRateLimitRetries: 1,
+  heartbeatIntervalMs: 5_000,
+  heartbeatMisses: 2,
 };
 
 /**
@@ -35,9 +55,10 @@ export const RECONNECT_DEFAULTS: ReconnectOptions = {
  *  - `auth`     the ticket was refused: a new ticket may help, a few times
  *  - `now`      the server is up but the room is gone (worker failure): retry at once
  *  - `shutdown` planned server restart: retry, first attempt spread out
- *  - `retry`    anything else (network, abnormal close): retry with backoff
+ *  - `limited`  rate limited (4008): long wait, one more try at most
+ *  - `retry`    anything else (network, abnormal close, heartbeat): retry with backoff
  */
-export type LossKind = 'final' | 'auth' | 'now' | 'shutdown' | 'retry';
+export type LossKind = 'final' | 'auth' | 'now' | 'shutdown' | 'limited' | 'retry';
 
 export function classifyClose(code: number): LossKind {
   switch (code) {
@@ -51,6 +72,8 @@ export function classifyClose(code: number): LossKind {
       return 'now';
     case CloseCode.ServerShutdown:
       return 'shutdown';
+    case CloseCode.RateLimited:
+      return 'limited';
     default:
       return 'retry';
   }
@@ -66,16 +89,21 @@ export interface NetworkStatus {
   isOnline(): boolean;
   /** Calls `listener` when the browser comes back online; returns an unsubscribe. */
   onOnline(listener: () => void): () => void;
+  /** Calls `listener` when the browser goes offline; returns an unsubscribe. */
+  onOffline(listener: () => void): () => void;
 }
 
-/** navigator.onLine and the window `online` event; always online where they do not exist. */
+const windowEvent = (name: 'online' | 'offline') => (listener: () => void) => {
+  if (typeof globalThis.addEventListener !== 'function') return () => {};
+  globalThis.addEventListener(name, listener);
+  return () => globalThis.removeEventListener(name, listener);
+};
+
+/** navigator.onLine and the window `online`/`offline` events; always online where they do not exist. */
 export const browserNetwork: NetworkStatus = {
   isOnline: () => (typeof navigator === 'undefined' || typeof navigator.onLine !== 'boolean' ? true : navigator.onLine),
-  onOnline(listener) {
-    if (typeof globalThis.addEventListener !== 'function') return () => {};
-    globalThis.addEventListener('online', listener);
-    return () => globalThis.removeEventListener('online', listener);
-  },
+  onOnline: windowEvent('online'),
+  onOffline: windowEvent('offline'),
 };
 
 /** Outcome of one rejoin attempt. */
@@ -96,15 +124,27 @@ export interface ReconnectorDeps {
 
 /** Code reported when the budget runs out (no server sent it). */
 export const RECONNECT_TIMEOUT_CODE = 4900;
+/** Client-side code: the media path failed while signaling was up. */
+export const MEDIA_FAILED_CODE = 4901;
+/** Client-side code: the server stopped answering the heartbeat. */
+export const HEARTBEAT_TIMEOUT_CODE = 4902;
 
 /**
  * Runs rejoin attempts until one succeeds, a final answer arrives, or the
- * budget is spent. While the browser reports being offline it does not try
- * and the budget does not run; it tries again as soon as the browser is back.
+ * budget is spent.
+ *
+ * The budget (30 s by default) is online time since the loss: backoff waits,
+ * attempts and a rate-limit wait all count; time the browser reports being
+ * offline does not. Going offline (the `offline` event, or finding it offline
+ * when an attempt is due) cancels the pending attempt and stops the clock;
+ * coming back online resumes it with a first attempt spread over
+ * 0..onlineSpreadMs. There is no cap on time spent offline.
  */
 export class Reconnector {
   private attempts = 0;
   private authFailures = 0;
+  private rateLimited = 0;
+  private unsubscribeOffline?: () => void;
   /** Budget spent, in ms of online time. */
   private spent = 0;
   /** When the current online stretch started (null while offline or idle). */
@@ -124,8 +164,22 @@ export class Reconnector {
   start(kind: Exclude<LossKind, 'final'>): void {
     const { options, random } = this.deps;
     if (kind === 'auth') this.authFailures++;
+    if (kind === 'limited') this.rateLimited++;
+    // Going offline mid-wait cancels the pending attempt at once.
+    this.unsubscribeOffline = this.deps.network.onOffline(() => {
+      if (this.stopped || this.running || this.timer === undefined) return;
+      this.deps.clearTimer(this.timer);
+      this.timer = undefined;
+      this.waitForOnline();
+    });
     const first =
-      kind === 'now' ? 0 : kind === 'shutdown' ? random() * options.shutdownSpreadMs : backoffDelay(1, options, random);
+      kind === 'now'
+        ? 0
+        : kind === 'shutdown'
+          ? random() * options.shutdownSpreadMs
+          : kind === 'limited'
+            ? this.rateLimitWait()
+            : backoffDelay(1, options, random);
     this.schedule(first);
   }
 
@@ -135,6 +189,12 @@ export class Reconnector {
     this.timer = undefined;
     this.unsubscribeOnline?.();
     this.unsubscribeOnline = undefined;
+    this.unsubscribeOffline?.();
+    this.unsubscribeOffline = undefined;
+  }
+
+  private rateLimitWait(): number {
+    return this.deps.options.rateLimitDelayMs + this.deps.random() * this.deps.options.rateLimitSpreadMs;
   }
 
   private remaining(): number {
@@ -166,8 +226,9 @@ export class Reconnector {
     this.unsubscribeOnline = this.deps.network.onOnline(() => {
       this.unsubscribeOnline?.();
       this.unsubscribeOnline = undefined;
-      // Back online: try at once, the network change is the event worth reacting to.
-      this.schedule(0);
+      // Back online: try soon (the network change is worth reacting to), but
+      // spread out, as every client on that network comes back at once.
+      this.schedule(this.deps.random() * this.deps.options.onlineSpreadMs);
     });
   }
 
@@ -184,9 +245,17 @@ export class Reconnector {
       this.stopped = true;
       this.pauseBudget();
       this.unsubscribeOnline?.();
+      this.unsubscribeOffline?.();
       return this.deps.onRecovered();
     }
     if (result.kind === 'final') return this.giveUp(result.code, result.reason);
+    if (result.kind === 'limited') {
+      // The server said "too many messages": never hammer it. One more try
+      // after a long wait, then stop.
+      this.rateLimited++;
+      if (this.rateLimited > this.deps.options.maxRateLimitRetries) return this.giveUp(result.code, result.reason);
+      return this.schedule(this.rateLimitWait());
+    }
     if (result.kind === 'auth') {
       this.authFailures++;
       if (this.authFailures > this.deps.options.maxAuthFailures) return this.giveUp(result.code, result.reason);

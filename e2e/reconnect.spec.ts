@@ -1,17 +1,11 @@
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { join } from 'node:path';
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { Stack } from './stack.js';
 
 // Automatic rejoin with real WebRTC (Chromium, real mediasoup). Each test runs
-// its own voice server and demo server, because the tests stop, crash and
-// restart the voice server and kill its media worker — the shared stack from
-// playwright.config.ts must not be disturbed.
+// its own voice server and demo server (e2e/stack.ts), because the tests stop,
+// crash and restart the voice server and kill its media worker.
 
-const root = process.cwd();
-const VOICE_PORT = 7821;
-const DEMO_PORT = 5191;
-const RTC_PORT_BASE = '40400';
-const demoUrl = `http://localhost:${DEMO_PORT}`;
+const PORTS = { voice: 7821, demo: 5191, rtcBase: 40400 };
 
 interface DemoEvent {
   type: 'reconnecting' | 'reconnected' | 'disconnected';
@@ -19,82 +13,11 @@ interface DemoEvent {
   at: number;
 }
 
-class Stack {
-  voice?: ChildProcess;
-  demo?: ChildProcess;
-
-  async startVoice(): Promise<void> {
-    this.voice = spawn(process.execPath, [join(root, 'server/dist/index.js')], {
-      stdio: 'ignore',
-      env: {
-        ...process.env,
-        PORT: String(VOICE_PORT),
-        NUM_WORKERS: '1',
-        RTC_PORT_BASE,
-        RTC_ANNOUNCED_ADDRESS: '127.0.0.1',
-        TICKET_PUBLIC_KEY_FILE: join(root, '.dev-keys/ticket-public.pem'),
-        ALLOWED_ORIGINS: `http://localhost:${DEMO_PORT},http://127.0.0.1:${DEMO_PORT}`,
-        LOG_LEVEL: 'warn',
-      },
-    });
-    await waitHealthy(`http://localhost:${VOICE_PORT}/healthz`);
-  }
-
-  async stopVoice(signal: NodeJS.Signals): Promise<void> {
-    const voice = this.voice;
-    this.voice = undefined;
-    if (!voice || voice.exitCode !== null) return;
-    const exited = new Promise((resolve) => voice.once('exit', resolve));
-    voice.kill(signal);
-    await exited;
-    if (signal === 'SIGKILL') {
-      // A killed parent leaves its media worker orphaned: end it too.
-      spawnSync('pkill', ['-9', '-P', String(voice.pid)]);
-    }
-  }
-
-  /** PID of the voice server's media worker. */
-  workerPid(): number {
-    const out = spawnSync('pgrep', ['-P', String(this.voice!.pid)], { encoding: 'utf8' }).stdout.trim();
-    const pid = Number(out.split('\n')[0]);
-    if (!pid) throw new Error('media worker not found');
-    return pid;
-  }
-
-  async startDemo(): Promise<void> {
-    this.demo = spawn(process.execPath, [join(root, 'demo/dev-server.mjs')], {
-      stdio: 'ignore',
-      env: {
-        ...process.env,
-        DEMO_PORT: String(DEMO_PORT),
-        VOICE_URL: `ws://localhost:${VOICE_PORT}/ws`,
-        DEV_LOG_DIR: join(root, 'test-results/dev-logs-reconnect'),
-      },
-    });
-    await waitHealthy(`${demoUrl}/healthz`);
-  }
-
-  async stop(): Promise<void> {
-    await this.stopVoice('SIGTERM');
-    this.demo?.kill('SIGTERM');
-  }
-}
-
-async function waitHealthy(url: string): Promise<void> {
-  for (let i = 0; i < 100; i++) {
-    try {
-      if ((await fetch(url)).ok) return;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error(`${url} did not come up`);
-}
-
 let stack: Stack;
 /** Contexts opened by a test; closed after it so fake microphones do not pile up. */
 const contexts: BrowserContext[] = [];
 test.beforeEach(async () => {
-  stack = new Stack();
+  stack = new Stack(PORTS);
   await stack.startVoice();
   await stack.startDemo();
 });
@@ -107,7 +30,7 @@ async function participant(browser: Browser, room: string, name: string, query =
   const context = await browser.newContext({ permissions: ['microphone'] });
   contexts.push(context);
   const page = await context.newPage();
-  await page.goto(`${demoUrl}/${query}`);
+  await page.goto(`${stack.demoUrl}/${query}`);
   await page.evaluate(([r, n]) => (window as any).voiceDemo.join(r, n), [room, name] as const);
   return page;
 }

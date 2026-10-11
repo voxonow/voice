@@ -46,6 +46,7 @@ export const RequestSchemas = {
   resumeProducer: z.object({ producerId: Id }),
   resumeConsumer: z.object({ consumerId: Id }),
   leave: z.strictObject({}),
+  ping: z.strictObject({}),
 } satisfies Record<Method, z.ZodType>;
 
 export const RequestEnvelope = z.object({

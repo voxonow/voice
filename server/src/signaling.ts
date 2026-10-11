@@ -197,6 +197,9 @@ class Connection implements PeerConnection {
         return room.resumeProducer(peer, data as never);
       case 'resumeConsumer':
         return room.resumeConsumer(peer, data as never);
+      case 'ping':
+        // Client liveness check; answering is the whole point.
+        return {};
       case 'leave':
         // Respond first, then close: the client awaits the answer.
         setImmediate(() => this.close(CloseCode.Left, 'left'));

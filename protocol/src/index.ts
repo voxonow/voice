@@ -71,6 +71,12 @@ export interface RequestData {
   resumeProducer: { producerId: string };
   resumeConsumer: { consumerId: string };
   leave: Record<string, never>;
+  /**
+   * Application-level liveness check (added without a protocol version change).
+   * A server that predates it answers `bad_request` and keeps the connection;
+   * clients then stop sending it for that session.
+   */
+  ping: Record<string, never>;
 }
 
 export type Method = keyof RequestData;
@@ -105,6 +111,7 @@ export interface ResponseData {
   resumeProducer: Empty;
   resumeConsumer: Empty;
   leave: Empty;
+  ping: Empty;
 }
 
 export type ErrorCode = 'bad_request' | 'unauthorized' | 'forbidden' | 'not_found' | 'conflict' | 'internal';

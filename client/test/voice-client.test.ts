@@ -93,6 +93,17 @@ interface ServerPeer {
 }
 const server = {
   down: false,
+  /** Silently drop client→server messages (socket stays open). */
+  dropUp: false,
+  /** Silently drop server→client messages (socket stays open). */
+  dropDown: false,
+  /** How `ping` is handled: answered, ignored, or unknown (a server that predates it). */
+  pingMode: 'answer' as 'answer' | 'ignore' | 'unknown',
+  pings: 0,
+  replyDelayMs: 0,
+  /** Close every join with this code (e.g. 4008), and this reason. */
+  closeJoinWith: undefined as number | undefined,
+  closeJoinReason: 'closed by test',
   /** Ticket check: 'ok' or 'reject' (ticket strings are "user:room:tag"). */
   check: (_ticket: string): 'ok' | 'reject' => 'ok',
   peers: new Map<string, ServerPeer>(),
@@ -102,6 +113,13 @@ const server = {
   nextId: 1,
   reset() {
     this.down = false;
+    this.dropUp = false;
+    this.dropDown = false;
+    this.pingMode = 'answer';
+    this.pings = 0;
+    this.replyDelayMs = 0;
+    this.closeJoinWith = undefined;
+    this.closeJoinReason = 'closed by test';
     this.check = () => 'ok';
     this.peers.clear();
     this.joins = [];
@@ -120,12 +138,28 @@ const server = {
     ws.onopen?.({});
   },
   receive(ws: FakeWebSocket, { id, method, data }: { id: number; method: string; data: any }) {
-    const reply = (ok: boolean, payload: any) =>
-      queueMicrotask(() => ws.deliver(JSON.stringify(ok ? { id, ok, data: payload } : { id, ok, error: payload })));
+    if (this.dropUp) return;
+    const reply = (ok: boolean, payload: any) => {
+      const send = () => ws.deliver(JSON.stringify(ok ? { id, ok, data: payload } : { id, ok, error: payload }));
+      if (this.replyDelayMs) setTimeout(send, this.replyDelayMs);
+      else queueMicrotask(send);
+    };
+    if (method === 'ping') {
+      this.pings++;
+      if (this.pingMode === 'ignore') return;
+      if (this.pingMode === 'unknown') return reply(false, { code: 'bad_request', message: 'unknown method ping' });
+      return reply(true, {});
+    }
     const peer = [...this.peers.values()].find((p) => p.ws === ws);
     if (method === 'join') {
       const [user, room] = (data.ticket as string).split(':');
       this.joins.push(data.ticket);
+      if (this.closeJoinWith !== undefined) {
+        const code = this.closeJoinWith;
+        const reason = this.closeJoinReason;
+        queueMicrotask(() => ws.serverClose(code, reason));
+        return;
+      }
       if (this.check(data.ticket) === 'reject') {
         reply(false, { code: 'unauthorized', message: 'invalid ticket' });
         queueMicrotask(() => queueMicrotask(() => ws.serverClose(CloseCode.Unauthorized, 'invalid ticket')));
@@ -185,6 +219,7 @@ class FakeWebSocket {
     server.receive(this, JSON.parse(raw));
   }
   deliver(raw: string) {
+    if (server.dropDown) return;
     if (this.readyState === 1) this.onmessage?.({ data: raw });
   }
   close(code = 1000, reason = '') {
@@ -202,15 +237,21 @@ class FakeWebSocket {
 
 class FakeNetwork {
   online = true;
-  private listeners = new Set<() => void>();
+  private onlineListeners = new Set<() => void>();
+  private offlineListeners = new Set<() => void>();
   isOnline = () => this.online;
   onOnline(l: () => void) {
-    this.listeners.add(l);
-    return () => this.listeners.delete(l);
+    this.onlineListeners.add(l);
+    return () => void this.onlineListeners.delete(l);
   }
+  onOffline(l: () => void) {
+    this.offlineListeners.add(l);
+    return () => void this.offlineListeners.delete(l);
+  }
+  /** Changes state and fires the matching browser event. */
   set(online: boolean) {
     this.online = online;
-    if (online) for (const l of [...this.listeners]) l();
+    for (const l of [...(online ? this.onlineListeners : this.offlineListeners)]) l();
   }
 }
 
@@ -228,15 +269,21 @@ async function connect(user: string, room = 'r1', extra: Record<string, unknown>
   const network = new FakeNetwork();
   const client = new VoiceClient({ url: 'ws://fake/ws', WebSocket: FakeWebSocket as any, getTicket, network, ...extra });
   const events: string[] = [];
+  const times: Record<string, number> = {};
   for (const e of ['reconnecting', 'reconnected', 'disconnected', 'participantJoined', 'participantLeft'] as const) {
-    client.on(e, (data: any) => events.push(`${e}${data?.code !== undefined ? `:${data.code}` : ''}${data?.name ? `:${data.name}` : ''}`));
+    client.on(e, (data: any) => {
+      times[e] = Date.now();
+      events.push(`${e}${data?.code !== undefined ? `:${data.code}` : ''}${data?.name ? `:${data.name}` : ''}`);
+    });
   }
   const mic = fakeTrack();
   await client.join(`${user}:${room}:0`);
   await client.publish(mic, 'microphone');
-  return { client, events, getTicket, network, mic };
+  return { client, events, times, getTicket, network, mic };
 }
 
+/** Lets time pass (the heartbeat always has a timer pending, so runAllTimers never ends). */
+const settle = (ms = 45_000) => vi.advanceTimersByTimeAsync(ms);
 const producesBy = (user: string) => server.calls.filter((c) => c.user === user && c.method === 'produce');
 const callsBy = (user: string, method: string) => server.calls.filter((c) => c.user === user && c.method === method);
 const lastProducer = () => media.state.producers.at(-1);
@@ -261,7 +308,7 @@ describe('rejoin after a lost connection', () => {
     alice.events.length = 0;
     server.drop('alice', 1006);
     expect(alice.client.state).toBe('reconnecting');
-    await vi.runAllTimersAsync();
+    await settle();
     expect(alice.client.state).toBe('connected');
     expect(alice.events).toEqual(['reconnecting:1006', 'reconnected']);
     expect(alice.getTicket).toHaveBeenCalledTimes(1);
@@ -277,7 +324,7 @@ describe('rejoin after a lost connection', () => {
     server.drop('alice', CloseCode.RoomClosed, 'media server error');
     await vi.advanceTimersByTimeAsync(0);
     expect(alice.getTicket).toHaveBeenCalledTimes(1);
-    await vi.runAllTimersAsync();
+    await settle();
     expect(alice.events).toEqual(['reconnecting:4010', 'reconnected']);
   });
 
@@ -289,7 +336,7 @@ describe('rejoin after a lost connection', () => {
     expect(alice.getTicket).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(alice.getTicket).toHaveBeenCalledTimes(1);
-    await vi.runAllTimersAsync();
+    await settle();
     expect(alice.client.state).toBe('connected');
   });
 
@@ -298,7 +345,7 @@ describe('rejoin after a lost connection', () => {
     const send = media.state.transports.find((t: any) => t.direction === 'send');
     send.emit('connectionstatechange', 'failed');
     expect(alice.client.state).toBe('reconnecting');
-    await vi.runAllTimersAsync();
+    await settle();
     expect(alice.events).toEqual(['reconnecting:4901', 'reconnected']);
   });
 
@@ -314,7 +361,7 @@ describe('no rejoin loop', () => {
   it('manual leave (4000): disconnected, no reconnect', async () => {
     const alice = await connect('alice');
     await alice.client.leave();
-    await vi.runAllTimersAsync();
+    await settle();
     expect(alice.events).toEqual(['disconnected:4000']);
     expect(alice.getTicket).not.toHaveBeenCalled();
   });
@@ -347,7 +394,7 @@ describe('tickets', () => {
     const alice = await connect('alice');
     alice.getTicket.mockRejectedValueOnce(new Error('fetch failed')).mockRejectedValueOnce(new Error('fetch failed'));
     server.drop('alice', 1006);
-    await vi.runAllTimersAsync();
+    await settle();
     expect(alice.getTicket).toHaveBeenCalledTimes(3);
     expect(alice.client.state).toBe('connected');
   });
@@ -357,7 +404,7 @@ describe('tickets', () => {
     let rejected = 0;
     server.check = () => (rejected++ === 0 ? 'reject' : 'ok');
     server.drop('alice', 1006);
-    await vi.runAllTimersAsync();
+    await settle();
     expect(alice.getTicket).toHaveBeenCalledTimes(2);
     expect(alice.client.state).toBe('connected');
   });
@@ -366,17 +413,17 @@ describe('tickets', () => {
     const alice = await connect('alice');
     server.check = () => 'reject';
     server.drop('alice', 1006);
-    await vi.runAllTimersAsync();
+    await settle();
     expect(alice.getTicket).toHaveBeenCalledTimes(3);
     expect(alice.events.at(-1)).toBe('disconnected:4003');
-    expect(Date.now()).toBeLessThan(10_000);
+    expect(alice.times.disconnected! - alice.times.reconnecting!).toBeLessThan(10_000);
   });
 
   it('the app refuses a ticket (forbidden): stops at once', async () => {
     const alice = await connect('alice');
     alice.getTicket.mockRejectedValue(new VoiceError('forbidden', 'no longer a member'));
     server.drop('alice', 1006);
-    await vi.runAllTimersAsync();
+    await settle();
     expect(alice.getTicket).toHaveBeenCalledTimes(1);
     expect(alice.events).toEqual(['reconnecting:1006', 'disconnected:4003']);
   });
@@ -385,7 +432,7 @@ describe('tickets', () => {
     const alice = await connect('alice');
     alice.getTicket.mockResolvedValue('alice:other-room:9');
     server.drop('alice', 1006);
-    await vi.runAllTimersAsync();
+    await settle();
     expect(alice.client.state).toBe('disconnected');
     expect(alice.events.at(-1)).toBe('disconnected:4003');
     expect([...server.peers.values()].some((p) => p.room === 'other-room')).toBe(false);
@@ -397,8 +444,8 @@ describe('budget and network', () => {
     const alice = await connect('alice');
     server.down = true;
     server.drop('alice', 1006);
-    await vi.runAllTimersAsync();
-    expect(Date.now()).toBe(30_000);
+    await settle();
+    expect(alice.times.disconnected! - alice.times.reconnecting!).toBe(30_000);
     expect(alice.events).toEqual(['reconnecting:1006', `disconnected:${RECONNECT_TIMEOUT_CODE}`]);
     expect(alice.getTicket.mock.calls.length).toBeGreaterThan(3);
   });
@@ -411,7 +458,7 @@ describe('budget and network', () => {
     expect(alice.getTicket).not.toHaveBeenCalled();
     expect(alice.client.state).toBe('reconnecting');
     alice.network.set(true);
-    await vi.runAllTimersAsync();
+    await settle();
     expect(alice.getTicket).toHaveBeenCalledTimes(1);
     expect(alice.client.state).toBe('connected');
   });
@@ -422,7 +469,7 @@ describe('mute state', () => {
     const alice = await connect('alice');
     await alice.client.setMuted('microphone', true);
     server.drop('alice', 1006);
-    await vi.runAllTimersAsync();
+    await settle();
     expect(alice.client.state).toBe('connected');
     const producer = lastProducer();
     expect(producer.paused).toBe(true);
@@ -447,9 +494,185 @@ describe('mute state', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await alice.client.setMuted('microphone', true);
     server.down = false;
-    await vi.runAllTimersAsync();
+    await settle();
     expect(alice.client.state).toBe('connected');
     expect(lastProducer().paused).toBe(true);
     expect(lastProducer().track).not.toBe(alice.mic);
+  });
+});
+
+/** Events must tell one consistent story: at most one final `disconnected`, last; `reconnected` only after `reconnecting`. */
+function expectConsistent(events: string[], state: string) {
+  const lifecycle = events.filter((e) => /^(reconnecting|reconnected|disconnected)/.test(e));
+  let reconnecting = false;
+  lifecycle.forEach((e, i) => {
+    if (e.startsWith('reconnecting')) {
+      expect(reconnecting).toBe(false);
+      reconnecting = true;
+    } else if (e === 'reconnected') {
+      expect(reconnecting).toBe(true);
+      reconnecting = false;
+    } else expect(i).toBe(lifecycle.length - 1);
+  });
+  const last = lifecycle.at(-1);
+  expect(state).toBe(!last || last === 'reconnected' ? 'connected' : last.startsWith('reconnecting') ? 'reconnecting' : 'disconnected');
+}
+
+describe('heartbeat', () => {
+  it('silent cut both ways (socket stays open): lost within 10–15 s, rejoins when the path is back', async () => {
+    const alice = await connect('alice');
+    await settle(7_000);
+    server.dropUp = server.dropDown = true;
+    const cutAt = Date.now();
+    await settle(9_900);
+    expect(alice.client.state).toBe('connected');
+    await settle(5_200);
+    expect(alice.events).toContain('reconnecting:4902');
+    expect(alice.times.reconnecting! - cutAt).toBeGreaterThanOrEqual(10_000);
+    expect(alice.times.reconnecting! - cutAt).toBeLessThanOrEqual(15_000);
+    server.dropUp = server.dropDown = false;
+    await settle();
+    expect(alice.client.state).toBe('connected');
+    expectConsistent(alice.events, alice.client.state);
+  });
+
+  it('server→client silence only: detected', async () => {
+    const alice = await connect('alice');
+    server.dropDown = true;
+    await settle(16_000);
+    expect(alice.events[0]).toBe('reconnecting:4902');
+  });
+
+  it('client→server silence only: detected even while the server keeps talking', async () => {
+    const alice = await connect('alice');
+    await connect('bob');
+    server.dropUp = true;
+    // Notifications keep arriving (bob mutes and unmutes); they do not count as an answer.
+    for (let t = 0; t < 16_000; t += 2_000) {
+      for (const p of server.peers.values()) if (p.user === 'alice') p.ws.deliver(JSON.stringify({ notification: 'consumerPaused', data: { consumerId: 'x' } }));
+      await settle(2_000);
+    }
+    expect(alice.events).toContain('reconnecting:4902');
+  });
+
+  it('slow answers (7 s) are not a disconnect', async () => {
+    const alice = await connect('alice');
+    server.replyDelayMs = 7_000;
+    await settle(120_000);
+    expect(alice.events).toEqual([]);
+    expect(alice.client.state).toBe('connected');
+    expect(server.pings).toBeGreaterThan(5);
+  });
+
+  it('a late answer resets the count: one miss is not enough', async () => {
+    const alice = await connect('alice');
+    server.pingMode = 'ignore';
+    await settle(9_900); // the ping at 5 s is never answered → one miss at the 10 s check
+    server.pingMode = 'answer'; // the ping at 10 s is answered → count resets at 15 s
+    await settle(60_000);
+    expect(alice.events).toEqual([]);
+  });
+
+  it('two unanswered pings in a row (signaling otherwise fine): lost', async () => {
+    const alice = await connect('alice');
+    server.pingMode = 'ignore';
+    await settle(15_100);
+    expect(alice.events[0]).toBe('reconnecting:4902');
+  });
+
+  it('older server without ping: asks once, keeps the call, no loop', async () => {
+    const alice = await connect('alice');
+    server.pingMode = 'unknown';
+    await settle(300_000);
+    expect(server.pings).toBe(1);
+    expect(alice.events).toEqual([]);
+    expect(alice.client.state).toBe('connected');
+  });
+
+  it('coming back online while connected checks at once', async () => {
+    const alice = await connect('alice');
+    await settle(1_000);
+    const before = server.pings;
+    alice.network.set(true);
+    await settle(0);
+    expect(server.pings).toBe(before + 1);
+  });
+});
+
+describe('rate limit (4008)', () => {
+  it('waits 15–20 s, retries once, then gives up', async () => {
+    const alice = await connect('alice');
+    const joins = server.joins.length;
+    server.closeJoinWith = CloseCode.RateLimited;
+    server.drop('alice', CloseCode.RateLimited, 'rate limit exceeded');
+    await settle(14_900);
+    expect(server.joins.length).toBe(joins); // nothing for 15 s
+    await settle(30_000);
+    expect(server.joins.length).toBe(joins + 1); // exactly one retry
+    expect(alice.events).toEqual(['reconnecting:4008', 'disconnected:4008']);
+    expectConsistent(alice.events, alice.client.state);
+  });
+
+  it('a rate-limited loss recovers when the retry is accepted', async () => {
+    const alice = await connect('alice');
+    server.drop('alice', CloseCode.RateLimited, 'rate limit exceeded');
+    await settle();
+    expect(alice.events).toEqual(['reconnecting:4008', 'reconnected']);
+    expect(alice.times.reconnected! - alice.times.reconnecting!).toBeGreaterThanOrEqual(15_000);
+  });
+});
+
+describe('close codes during a rejoin keep their meaning', () => {
+  it('replaced (4009) while rejoining: stop', async () => {
+    const alice = await connect('alice');
+    server.closeJoinWith = CloseCode.Replaced;
+    server.drop('alice', 1006);
+    await settle();
+    expect(alice.events).toEqual(['reconnecting:1006', 'disconnected:4009']);
+    expect(server.joins.length).toBe(2);
+  });
+
+  it('join lost on the way (server closes 4001 "join timeout"): retried, not final', async () => {
+    const alice = await connect('alice');
+    server.closeJoinWith = CloseCode.AuthRequired;
+    server.closeJoinReason = 'join timeout';
+    server.drop('alice', 1006);
+    await settle(3_000);
+    server.closeJoinWith = undefined;
+    await settle();
+    expect(alice.events).toEqual(['reconnecting:1006', 'reconnected']);
+  });
+
+  it('any other 4001 while rejoining (malformed join) stays final', async () => {
+    const alice = await connect('alice');
+    server.closeJoinWith = CloseCode.AuthRequired;
+    server.closeJoinReason = 'malformed join';
+    server.drop('alice', 1006);
+    await settle();
+    expect(alice.events).toEqual(['reconnecting:1006', 'disconnected:4001']);
+    expect(server.joins.length).toBe(2);
+  });
+
+  it('room closed (4010) / shutdown (4011) while rejoining: keep trying within the budget', async () => {
+    for (const code of [CloseCode.RoomClosed, CloseCode.ServerShutdown]) {
+      server.reset();
+      const alice = await connect('alice');
+      server.closeJoinWith = code;
+      server.drop('alice', 1006);
+      await settle(8_000);
+      server.closeJoinWith = undefined;
+      await settle();
+      expect(alice.events).toEqual(['reconnecting:1006', 'reconnected']);
+      expectConsistent(alice.events, alice.client.state);
+    }
+  });
+
+  it('every scenario above keeps a consistent event story', async () => {
+    const alice = await connect('alice');
+    server.down = true;
+    server.drop('alice', 1006);
+    await settle();
+    expectConsistent(alice.events, alice.client.state);
+    expect(alice.client.state).toBe('disconnected');
   });
 });
