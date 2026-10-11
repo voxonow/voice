@@ -150,6 +150,14 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
   private nextId = 1;
   /** Notifications are applied one at a time so close never overtakes create. */
   private notificationQueue: Promise<void> = Promise.resolve();
+  /**
+   * While a join request awaits its response: notifications that arrive first.
+   * The server snapshots the participant list before it adds us to the room,
+   * so everything it notifies us of is newer than the snapshot, but it may
+   * send those notifications before the join response. They are applied after
+   * the snapshot, in arrival order.
+   */
+  private earlyNotifications?: Notification[];
   private readonly reconnectOptions: ReconnectOptions;
   private reconnector?: Reconnector;
   /** Close code and reason of the socket that ended the current attempt, if the server sent one. */
@@ -274,12 +282,16 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
    */
   private async establish(ticket: string, connectTimeoutMs?: number): Promise<ResponseData['join']> {
     await this.openSocket(connectTimeoutMs);
+    this.earlyNotifications = [];
     const joined = await this.request('join', { ticket, protocol: PROTOCOL_VERSION });
     this.peerId = joined.peerId;
     this.roomId = joined.roomId;
-    // Notifications after this point (joins, leaves) update the map in order.
+    // The snapshot first, then what changed after it, in order.
     this.participants.clear();
     for (const participant of joined.participants) this.participants.set(participant.peerId, participant);
+    const early = this.earlyNotifications ?? [];
+    this.earlyNotifications = undefined;
+    for (const message of early) this.enqueueNotification(message);
     this.device = await Device.factory();
     await this.device.load({
       routerRtpCapabilities: joined.routerRtpCapabilities as unknown as types.RtpCapabilities,
@@ -429,6 +441,9 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
       // (notifications during the rejoin are not emitted, see onNotification).
       for (const [id, p] of before) if (!this.participants.has(id)) this.emit('participantLeft', p);
       for (const [id, p] of this.participants) if (!before.has(id)) this.emit('participantJoined', p);
+      // Connected from here, in the same step as the diff: a notification
+      // applied after it is announced normally instead of falling between.
+      this.state = 'connected';
       return { ok: true };
     } catch (error) {
       const code = this.lastCloseCode;
@@ -516,7 +531,8 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
       return;
     }
     if ('notification' in message) {
-      this.notificationQueue = this.notificationQueue.then(() => this.onNotification(message as Notification));
+      if (this.earlyNotifications) this.earlyNotifications.push(message as Notification);
+      else this.enqueueNotification(message as Notification);
       return;
     }
     const pending = this.pending.get(message.id);
@@ -527,13 +543,20 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
     else pending.reject(new VoiceError(message.error.code, message.error.message));
   }
 
+  private enqueueNotification(message: Notification): void {
+    this.notificationQueue = this.notificationQueue.then(() => this.onNotification(message));
+  }
+
   private async onNotification(message: Notification): Promise<void> {
     try {
       switch (message.notification) {
-        case 'participantJoined':
+        case 'participantJoined': {
+          // Idempotent: a repeated notification neither duplicates nor re-announces.
+          const known = this.participants.has(message.data.peerId);
           this.participants.set(message.data.peerId, message.data);
-          if (this.state === 'connected') this.emit('participantJoined', message.data);
+          if (!known && this.state === 'connected') this.emit('participantJoined', message.data);
           return;
+        }
         case 'participantLeft': {
           const participant = this.participants.get(message.data.peerId);
           this.participants.delete(message.data.peerId);
@@ -693,6 +716,7 @@ export class VoiceClient extends Emitter<VoiceClientEvents> {
    * rejoin; participants too, so a rejoin can report only what changed.
    */
   private dropSession(reason: string): void {
+    this.earlyNotifications = undefined;
     this.stopLiveness();
     this.rejectPending(reason || 'connection closed');
     for (const consumerId of [...this.consumers.keys()]) this.removeConsumer(consumerId);

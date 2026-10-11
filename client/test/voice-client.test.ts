@@ -200,6 +200,9 @@ const server = {
   },
 };
 
+/** The server's own receive, restored before each test (some tests wrap it). */
+const originalReceive = server.receive;
+
 class FakeWebSocket {
   readonly CONNECTING = 0;
   readonly OPEN = 1;
@@ -292,6 +295,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(0);
   server.reset();
+  (server as any).receive = originalReceive;
   media.state.producers.length = 0;
   media.state.transports.length = 0;
 });
@@ -696,5 +700,96 @@ describe('close codes during a rejoin keep their meaning', () => {
     await settle();
     expectConsistent(alice.events, alice.client.state);
     expect(alice.client.state).toBe('disconnected');
+  });
+});
+
+describe('participant events around the join response', () => {
+  // The server snapshots the participant list, then adds the joiner to the
+  // room, so every notification the joiner gets is newer than the snapshot —
+  // but it may arrive before the join response. Here the fake server delivers
+  // the given notifications synchronously when it receives `user`'s next join,
+  // before it answers: the order is fixed, not left to timing.
+  function beforeJoinResponse(user: string, notifications: () => object[]) {
+    let armed = true;
+    (server as any).receive = (ws: FakeWebSocket, msg: any) => {
+      if (armed && msg.method === 'join' && String(msg.data.ticket).startsWith(`${user}:`)) {
+        armed = false;
+        for (const n of notifications()) ws.deliver(JSON.stringify(n));
+      }
+      return originalReceive.call(server, ws, msg);
+    };
+  }
+  const joined = (peerId: string, name: string) => ({ notification: 'participantJoined', data: { peerId, userId: name, name } });
+  const left = (peerId: string) => ({ notification: 'participantLeft', data: { peerId } });
+  const names = (client: InstanceType<typeof VoiceClient>) => [...client.participants.values()].map((p) => p.name).sort();
+  const count = (events: string[], event: string) => events.filter((e) => e === event).length;
+  const peerIdOf = (user: string) => [...server.peers.values()].find((p) => p.user === user)!.peerId;
+
+  it('rejoin: a participantJoined that arrives before the join response is kept and announced once', async () => {
+    const alice = await connect('alice');
+    beforeJoinResponse('alice', () => [joined('peer-carol', 'carol')]);
+    server.drop('alice', 1006);
+    await settle();
+    expect(alice.client.state).toBe('connected');
+    expect(names(alice.client)).toEqual(['carol']);
+    expect(count(alice.events, 'participantJoined:carol')).toBe(1);
+  });
+
+  it('first join: a participantJoined that arrives before the join response is kept and announced once', async () => {
+    beforeJoinResponse('alice', () => [joined('peer-carol', 'carol')]);
+    const alice = await connect('alice');
+    expect(names(alice.client)).toEqual(['carol']);
+    expect(count(alice.events, 'participantJoined:carol')).toBe(1);
+  });
+
+  it('joined then left before the join response: not in the list, nothing announced', async () => {
+    const alice = await connect('alice');
+    alice.events.length = 0;
+    beforeJoinResponse('alice', () => [joined('peer-carol', 'carol'), left('peer-carol')]);
+    server.drop('alice', 1006);
+    await settle();
+    expect(names(alice.client)).toEqual([]);
+    expect(alice.events.filter((e) => e.includes('carol'))).toEqual([]);
+  });
+
+  it('someone in the snapshot who leaves before the join response does not linger', async () => {
+    await connect('bob');
+    const alice = await connect('alice');
+    expect(names(alice.client)).toEqual(['bob']);
+    alice.events.length = 0;
+    // Bob is still in the (fake) server's snapshot; his leave is newer.
+    beforeJoinResponse('alice', () => [left(peerIdOf('bob'))]);
+    server.drop('alice', 1006);
+    await settle();
+    expect(names(alice.client)).toEqual([]);
+    expect(count(alice.events, 'participantLeft:bob')).toBe(1);
+    expect(alice.events).not.toContain('participantJoined:bob');
+  });
+
+  it('a repeated participantJoined for someone already in the snapshot neither duplicates nor re-announces', async () => {
+    await connect('bob');
+    const alice = await connect('alice');
+    alice.events.length = 0;
+    beforeJoinResponse('alice', () => [joined(peerIdOf('bob'), 'bob')]);
+    server.drop('alice', 1006);
+    await settle();
+    expect(names(alice.client)).toEqual(['bob']);
+    expect(alice.events.filter((e) => e.includes('bob'))).toEqual([]);
+  });
+
+  it('a repeated participantJoined while connected is applied once', async () => {
+    const alice = await connect('alice');
+    alice.events.length = 0;
+    const ws = [...server.peers.values()].find((p) => p.user === 'alice')!.ws;
+    ws.deliver(JSON.stringify(joined('peer-carol', 'carol')));
+    ws.deliver(JSON.stringify(joined('peer-carol', 'carol')));
+    await settle(0);
+    expect(names(alice.client)).toEqual(['carol']);
+    expect(count(alice.events, 'participantJoined:carol')).toBe(1);
+    ws.deliver(JSON.stringify(left('peer-carol')));
+    ws.deliver(JSON.stringify(left('peer-carol')));
+    await settle(0);
+    expect(names(alice.client)).toEqual([]);
+    expect(count(alice.events, 'participantLeft:carol')).toBe(1);
   });
 });
