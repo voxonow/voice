@@ -15,7 +15,7 @@
   "scripts": {
     "build": "npm run build --workspace=protocol && npm run build --workspace=client && npm run build --workspace=server && npm run build --workspace=demo",
     "typecheck": "npm run typecheck --workspaces --if-present && tsc -p e2e/tsconfig.json",
-    "test": "npm run test --workspaces --if-present && node --test demo/lan.test.mjs demo/dev-server.lan.test.mjs scripts/lan-cert.test.mjs bench/m6/stoi.test.mjs",
+    "test": "npm run test --workspaces --if-present && node --test demo/lan.test.mjs demo/dev-server.lan.test.mjs scripts/lan-cert.test.mjs bench/m6/stoi.test.mjs bench/capture-config.test.mjs",
     "test:e2e": "npm run build && playwright test",
     "keys": "node demo/scripts/generate-keys.mjs",
     "dev": "node scripts/dev.mjs",
@@ -24,7 +24,8 @@
     "dev:lan": "node scripts/dev.mjs --lan",
     "bench:m6": "node bench/m6/run.mjs",
     "bench:codec": "npm run build --workspace=client && node bench/codec-ab.mjs",
-    "bench:ns": "npm run build --workspace=client && npm run build --workspace=demo && node bench/ns-eval.mjs"
+    "bench:ns": "npm run build --workspace=client && npm run build --workspace=demo && node bench/ns-eval.mjs",
+    "bench:capture": "npm run build --workspace=client && npm run build --workspace=demo && node bench/capture-eval.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.0",

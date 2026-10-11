@@ -133,15 +133,20 @@ function levelSpeech(x, targetDb = -26) {
  * condition. Returns { clean, conditions: { name: { file, speech } } }.
  *
  * speechFile: use this recording as the speech (any format afconvert reads)
- * instead of the TTS sentence; it is levelled to −26 dBFS over speech frames
- * so runs with different recordings stay comparable.
+ * instead of the TTS sentence; it is levelled to `levelDb` (default −26 dBFS)
+ * over speech frames so runs with different recordings stay comparable.
+ *
+ * roomDrrDb: direct-to-reverberant ratio of the "room" condition. Unset keeps
+ * the original response (direct path 1, reverberant tail ≈ −18 dB DRR — a
+ * talker far from the microphone); bench/capture-eval.mjs passes a desk-
+ * distance value. Its reference stays the dry speech either way.
  */
-export function buildCorpus(dir, { snrDb = 5, speechFile } = {}) {
+export function buildCorpus(dir, { snrDb = 5, speechFile, levelDb = -26, roomDrrDb } = {}) {
   mkdirSync(dir, { recursive: true });
   let raw;
   if (speechFile) {
     execFileSync('afconvert', ['-f', 'WAVE', '-d', 'LEI16@48000', '-c', '1', speechFile, join(dir, '_speech.wav')]);
-    raw = levelSpeech(readWav(join(dir, '_speech.wav')));
+    raw = levelSpeech(readWav(join(dir, '_speech.wav')), levelDb);
   } else {
     raw = tts('Yelda', SPEECH, join(dir, '_speech.wav'));
   }
@@ -175,6 +180,13 @@ export function buildCorpus(dir, { snrDb = 5, speechFile } = {}) {
   const ir = new Float32Array(Math.floor(0.7 * RATE));
   ir[0] = 1;
   for (let k = Math.floor(0.01 * RATE); k < ir.length; k++) ir[k] = (random() * 2 - 1) * 0.35 * Math.exp((-6.9 * k) / (0.6 * RATE));
+  if (roomDrrDb !== undefined) {
+    // Scale the tail so direct energy (ir[0]² = 1) ÷ tail energy = roomDrrDb.
+    let tail = 0;
+    for (let k = 1; k < ir.length; k++) tail += ir[k] * ir[k];
+    const g = Math.sqrt(10 ** (-roomDrrDb / 10) / tail);
+    for (let k = 1; k < ir.length; k++) ir[k] *= g;
+  }
   const wet = convolve(clean, ir);
   const scale = rms(clean) / rms(wet);
   // The "speech" here is the reverberant speech: suppressors are not asked to

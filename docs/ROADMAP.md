@@ -621,6 +621,95 @@ artık tek kaydedicinin kanallarında; (3) yeniden örnekleyicinin hızı.
 kulakla dinleme, gerçek Safari, telefonlar ve telefon CPU'su, hoparlör +
 mikrofonla yankı, gerçek (sentetik olmayan) gürültü kayıtları.
 
+**Yakalama zinciri ölçümü (Faz 1) ve kör dinleme seti (Faz 2) — 2026-10-11
+(ön bulgu, seçim yapılmadı; kriterler açık)**
+
+Araç: `npm run bench:capture` (`bench/capture-eval.mjs`; kullanım, LiveKit
+Cloud güvenlik modeli ve kaydın kaynağı: `docs/CAPTURE-BENCH.md`). Önceki
+ölçümlerden farkı: ses, Chrome'un sahte mikrofonuna dosya olarak verilir ve
+**ürünün gerçek yakalama yolundan** (`getUserMedia` + Chrome AEC/NS/AGC) geçer;
+Krisp ilk kez gerçekten çalışırken ölçüldü (ayrı LiveKit Cloud **test**
+projesi; production'a dokunulmadı).
+
+**Geçerlilik:** Google Chrome 154 (headless), bu Mac (Apple Silicon), dosyadan
+beslenen sahte mikrofon, tek gerçek Türkçe konuşma kaydı (−26 dBFS), sentetik
+tohumlu girişim (5 dB SNR; fan için 0/15 dB SNR ve −36/−16 dBFS süpürmesi).
+Yerel zincirler loopback (ağ bozulması yok). Cloud zincirleri internet
+üzerinden; alıcı tarafı ölçümleri internet etkisini içerir (paket kaybı
+koşu başına 2–55 paket, 500 ms'ye varan boşluklar, ağ+motor 178–511 ms), bu
+yüzden bastırıcılar **ağ öncesi ("sent") katmanında** karşılaştırıldı. Her
+satır 3 tekrarın medyanı. Ham sonuçlar (git dışı): `bench-results/capture/`
+altında `2026-10-11T07-34-08-189Z` (yerel), `…T08-48-09-292Z` (süpürmelerin
+tekrarı), `…T09-09-50-162Z` (Cloud, 60 koşu), `…T10-07-56-359Z` (Krisp,
+temiz kayıt, 3 tekrar).
+
+Fan, 5 dB SNR (ağ öncesi; işlemsiz giriş STOI 0,713, konuşma/duraklama 6,2 dB):
+
+| Zincir | STOI | Konuşma/duraklama | Kesilen konuşma | Eklenen gecikme |
+|---|---|---|---|---|
+| Chrome NS (ürün ayarı, bastırıcı yok) | 0,704 | 19,5 dB | %0,0 | 0 ms |
+| RNNoise, Chrome NS kapalı | 0,797 | 46,7 dB | %2,5 | 36 ms |
+| RNNoise, Chrome NS açık (çift NS) | 0,734 | 49,2 dB | %3,4 | 33 ms |
+| Krisp (LiveKit Cloud test projesi) | 0,753 | 58,1 dB | %4,8 | 59 ms |
+
+Diğer koşullar, STOI (ağ öncesi) — Chrome NS / RNNoise (NS kapalı) / Krisp:
+
+| Koşul (giriş STOI) | Chrome NS | RNNoise, NS kapalı | Krisp |
+|---|---|---|---|
+| temiz kayıt (1,000) | 0,970 | 0,986 | 0,946 [0,908–0,947]; tekrar koşu 0,947 |
+| klavye (0,942) | 0,932 | 0,953 | 0,970 |
+| sokak (0,725) | 0,701 | 0,779 | 0,767 |
+| konuşma üstüne konuşma (0,647) | 0,602 | 0,625 | 0,643 |
+| yankılı oda (0,810) | 0,763 | 0,803 | 0,755 |
+| fan 0 dB SNR (0,582) | 0,589 | 0,686 | 0,648 |
+| fan 15 dB SNR (0,896) | 0,868 | 0,900 | 0,875 |
+
+Okuma (karar değil):
+- **Motor eşitliği:** aynı ayarlarla bizim motor ve yerel LiveKit alıcıda
+  aynı sonucu veriyor (10 koşulda STOI farkı ≤ 0,005); ağ+motor gecikmesi
+  loopback'te bizde 39–57 ms, LiveKit'te 43–55 ms.
+- **Chrome'un kendi NS'i** duraklamaları ~13 dB bastırıyor, anlaşılırlığı
+  artırmıyor (fan 0,704 ↔ giriş 0,713). Chrome 154'te `applyConstraints` ile
+  NS'i sonradan kapatmak etkisiz; yalnız `getUserMedia` kısıtı çalışıyor.
+- **RNNoise tek başına (Chrome NS kapalı)** bu ölçümde fan, sokak, oda ve
+  temiz kayıtta en yüksek STOI'yi veriyor; Krisp'ten az bastırıyor (fan 46,7 ↔
+  58,1 dB), daha az konuşma kesiyor (%2,5 ↔ %4,8), daha az gecikme ekliyor
+  (çoğu koşulda 33 ms, fan 15 dB'de 53 ms ↔ Krisp 58–67 ms).
+- **Çift NS** (Chrome NS + RNNoise) her koşulda RNNoise tek başınadan kötü.
+- **Klavye:** Krisp tıklamaları üst bantta da siliyor (8–12 kHz, konuşmaya
+  göre −0,2 dB; RNNoise +13,1 dB, Chrome NS +21,2 dB — tıklamalar kalıyor).
+  Krisp'in açık üstünlüğü bu koşulda.
+- **Konuşma üstüne konuşma:** hiçbir zincir girişin üstüne çıkmıyor.
+- **Krisp temiz konuşmada** STOI'yi biraz düşürüyor (0,970 → 0,946) ve 0 dB
+  fan'da konuşmanın %13,6'sını kesiyor (RNNoise %2,8).
+- **Sessiz giriş (−36 dBFS):** Chrome NS kapalıyken AGC seviyeyi yükseltmedi
+  (RNNoise zincirinin çıkışı −36,5 dBFS; NS açık zincirlerde −25,7 dBFS).
+  RNNoise'u NS kapalı kullanmanın ayrı bir seviye maliyeti var.
+- Tekrarlar arası oynama küçük (çoğu satırda STOI aralığı ≤ 0,005);
+  istisnalar Krisp'te temiz kayıt (0,908) ve yankılı odada (0,619) birer düşük
+  tekrar.
+
+Ölçüm notları: Krisp'in etkin olup olmadığı bu koşularda yalnız ekledikten 2
+sn sonra okundu; 33 Krisp tekrarının 5'inde `false` döndü, ama bu tekrarların
+eklediği gecikme (57–63 ms) ve konuşma/duraklama değerleri aynı koşulun etkin
+tekrarlarıyla aynı düzeyde — Krisp çalışıyordu; tablolardaki medyanlar bu
+tekrarları içeriyor. Araç artık
+etkinliği kayıt sonunda da okuyor ve iki okumada da etkin görünmeyen koşuyu
+Krisp ölçümü saymıyor. Yerel LiveKit'te Krisp etkinleşmiyor (`/settings`
+404). İlk yerel koşuda süpürmelerin bizim motordaki 24 tekrarı "invalid
+ticket" ile düştü (anahtarlar değişmemişti; neden kanıtlanmadı — araç artık
+portlarından biri doluysa başlamıyor ve her koşudan önce kendi ses sunucusunun
+ayakta olduğunu denetliyor); bu süpürmeler ikinci koşuda hatasız ölçüldü.
+
+**Faz 2 — kör dinleme seti:** Faz 1 koşularının ağ öncesi kayıtlarından
+etiketsiz bir dinleme seti ve ayrı tutulan anahtarı hazırlandı (git dışı,
+`bench-results/listening/`). **Dinleme yapılmadı; sonuç yok.** Yukarıdaki
+nesnel ölçüler kulakla değerlendirmenin yerine geçmez (M6 kabul kriteri).
+
+Bu ölçümde de **ölçülmeyenler:** gerçek mikrofon/oda/hoparlör ve yankı,
+Safari ve Firefox'un yakalama yolu, kayıplı ağ, CPU, telefonlar, gerçek
+(sentetik olmayan) gürültü kayıtları, birden fazla konuşmacı kaydı.
+
 ### M2 — Bağlantı dayanıklılığı ve TURN
 
 **Kapsam** — üç katmanlı kurtarma:
@@ -846,6 +935,12 @@ geçer, prod'a ayrıca karar verilmeden çıkmaz.
 
 ## 8. Değişiklik günlüğü
 
+- **2026-10-11** — M6 yakalama zinciri ölçümü: `npm run bench:capture`
+  (gerçek `getUserMedia` yolu; Krisp ilk kez ayrı bir LiveKit Cloud test
+  projesinde ölçüldü; Cloud için açık yapılandırma isteyen güvenlik modeli;
+  Krisp yalnız seçilince yüklenir). Faz 1 sonuçları ve Faz 2 kör dinleme seti
+  M6'ya yazıldı; dinleme yapılmadı, seçim yapılmadı. Kullanım:
+  `docs/CAPTURE-BENCH.md`.
 - **2026-10-10** — M6 canlı deneme: demoda `?ns=rnnoise|gtcrn|gtcrn-split`
   (varsayılan kapalı), `npm run bench:ns` (STOI, iki katman), gerçek kayıtla
   ölçüm. GTCRN'in 8 kHz bant kaybı tespit edildi, önceki ön bulgu düzeltildi.
